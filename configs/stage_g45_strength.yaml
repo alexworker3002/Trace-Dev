@@ -1,0 +1,29 @@
+stage: G4.5
+input:
+  checkpoint: null
+  use_dynamic_target: false
+  use_proposal_as_target: false
+  use_hr_as_training_label: false
+metrics:
+  compute_r_D_hom: true
+  compute_e_D: true
+  compute_nps_amplitude: true
+  compute_nps_shape: true
+  compute_residual_edge_corr: true
+  compute_lesion_retention: true
+thresholds:
+  r_D_hom_min: 0.65
+  r_D_hom_max: 0.85
+  r_D_hom_identity: 0.90
+  r_D_hom_oversmooth: 0.60
+  e_D_min: 0.10
+  e_D_identity: 0.05
+  eta_res_edge_max: 0.10
+  c_lesion_min: 0.90
+  A_NPS_min: 0.50
+  A_NPS_max: 0.85
+  d_shape_max: 0.15
+fallback:
+  block_next_stages_on_fail: true
+  rollback_on_cycle_fail: true
+  allow_continue_training_without_release: false

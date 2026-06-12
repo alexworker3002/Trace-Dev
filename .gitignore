@@ -1,0 +1,61 @@
+# Python caches and build outputs
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local environments
+.env
+.env.*
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# Training, inference, and audit artifacts
+runs/
+checkpoints/
+ddp_logs/
+wandb/
+mlruns/
+outputs/
+artifacts/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+
+# Large data artifacts
+datasets/*
+!datasets/manifests/
+!datasets/manifests/**
+!datasets/splits/
+!datasets/splits/**
+*.zarr/
+*.npy
+*.npz
+*.nii
+*.nii.gz
+*.dcm
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary files
+*.log
+*.tmp
+*.bak

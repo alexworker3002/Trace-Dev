@@ -1,0 +1,29 @@
+{
+  "01": {
+    "path": "datasets/004-FBP/01_ome.zarr"
+  },
+  "03": {
+    "path": "datasets/004-FBP/03_ome.zarr"
+  },
+  "04": {
+    "path": "datasets/004-FBP/04_ome.zarr"
+  },
+  "05": {
+    "path": "datasets/004-FBP/05_ome.zarr"
+  },
+  "06": {
+    "path": "datasets/004-FBP/06_ome.zarr"
+  },
+  "07": {
+    "path": "datasets/004-FBP/07_ome.zarr"
+  },
+  "08": {
+    "path": "datasets/004-FBP/08_ome.zarr"
+  },
+  "09": {
+    "path": "datasets/004-FBP/09_ome.zarr"
+  },
+  "10": {
+    "path": "datasets/004-FBP/10_ome.zarr"
+  }
+}

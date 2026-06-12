@@ -1,0 +1,23 @@
+run:
+  seed: 0
+  device: cuda
+  precision: fp32
+  artifact_mode: minimal
+  checkpoint_every_stage: true
+training:
+  g1_steps: 500
+  g2_steps: 500
+  g4_steps: 3200
+  g5_steps: 3000
+  g6_steps: 1000
+  g7_steps: 600
+  g8_steps: 600
+  audit_every_cycle: true
+data:
+  split: train
+  volume_id: null
+  batch_size: 128
+  num_workers: 4
+distributed:
+  backend: nccl
+  find_unused_parameters: false

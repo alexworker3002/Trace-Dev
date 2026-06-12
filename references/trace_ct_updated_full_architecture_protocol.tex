@@ -1,0 +1,3260 @@
+\PassOptionsToPackage{quiet}{fontspec}
+\documentclass[11pt,a4paper,UTF8,fontset=fandol]{ctexart}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{mathrsfs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{listings}
+\usepackage{array}
+\usepackage{setspace}
+\usepackage{titlesec}
+
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+\setstretch{1.12}
+\setlength{\emergencystretch}{3em}
+\setlist[itemize]{leftmargin=1.8em,itemsep=0.2em,topsep=0.2em}
+\setlist[enumerate]{leftmargin=2em,itemsep=0.2em,topsep=0.2em}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.5em}{}
+\titleformat{\subsubsection}{\normalsize\itshape}{\thesubsubsection.}{0.5em}{}
+
+\newtheorem{theorem}{定理}[section]
+\newtheorem{lemma}[theorem]{引理}
+\newtheorem{proposition}[theorem]{命题}
+\newtheorem{corollary}[theorem]{推论}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{定义}
+\newtheorem{assumption}[theorem]{假设}
+\newtheorem{remark}[theorem]{备注}
+
+\DeclareMathOperator{\Lip}{Lip}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator{\SG}{SG}
+\DeclareMathOperator{\EMA}{EMA}
+\DeclareMathOperator{\Var}{Var}
+\DeclareMathOperator{\Std}{Std}
+\DeclareMathOperator{\Cov}{Cov}
+\DeclareMathOperator{\clip}{clip}
+\DeclareMathOperator{\SWD}{SWD}
+\DeclareMathOperator{\supp}{supp}
+\DeclareMathOperator{\RobustFuse}{RobustFuse}
+\DeclareMathOperator{\ProxFuse}{ProxFuse}
+\DeclareMathOperator{\argmin}{arg\,min}
+\DeclareMathOperator{\NPS}{NPS}
+\DeclareMathOperator{\mean}{mean}
+\DeclareMathOperator{\median}{median}
+
+\DeclareMathOperator{\Audit}{Audit}
+\DeclareMathOperator{\MAD}{MAD}
+\DeclareMathOperator{\TV}{TV}
+\DeclareMathOperator{\BPF}{BPF}
+\DeclareMathOperator{\LPF}{LPF}
+\DeclareMathOperator{\HPF}{HPF}
+\DeclareMathOperator{\Agree}{Agree}
+\DeclareMathOperator{\Stab}{Stab}
+
+\newcommand{\norm}[1]{\left\lVert#1\right\rVert}
+\newcommand{\abs}[1]{\left\lvert#1\right\rvert}
+\newcommand{\ip}[2]{\left\langle#1,#2\right\rangle}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\cL}{\mathcal{L}}
+\newcommand{\cH}{\mathcal{H}}
+\newcommand{\cS}{\mathcal{S}}
+\newcommand{\cZ}{\mathcal{Z}}
+\newcommand{\cR}{\mathcal{R}}
+\newcommand{\cM}{\mathcal{M}}
+\newcommand{\one}{\mathbf{1}}
+
+
+\begin{document}
+
+\title{TRACE-CT 完整架构、去噪强度放行与分阶段验证协议\\
+{\large Traceable Residual-Audited Conditional Estimation for Self-Supervised CT Denoising}}
+\author{完整架构重构、理论假设与实现协议}
+\date{\today}
+\maketitle
+
+
+\begin{abstract}
+本文给出 TRACE-CT（Traceable Residual-Audited Conditional Estimation for Self-Supervised CT Denoising）的完整架构、理论假设、去噪强度放行机制与可执行验证协议。该框架面向无干净标签 CT 体数据去噪，核心目标不是把某个网络输出直接包装为 clean target，而是把自监督去噪拆成一条可追踪证据链：中心层主体 $x_h$、低通邻层上下文 $c_h$、跨体积受审计残差 $z_d$、粗粒度干净提案 $p_h$、结构保护 mask、动态目标 $t_h$、去噪强度控制器以及残差增强去噪器 $D_\theta$ 均具有明确接口、可测假设、进入条件和失败回退动作。
+
+TRACE-CT 的主线是粗到细、非对称、延迟反馈。$P_\phi$ 是 coarse clean proposal and feedback controller，通过中心层 blind-spot / masked prediction、配准相邻切片 noisy-to-noisy 信号、低频锚定和结构保护，生成低噪但允许偏平滑的粗干净提案 $p_h$，同时输出上下文可靠性、噪声调制、结构风险和反馈 mask。$D_\theta$ 是 detail-preserving residual refinement network，以中心层 noisy 主体、受控 noisier 扰动、低通上下文和 $p_h$ 为条件，在可信结构区域恢复中心层特异细节，并在 homogeneous 低风险区域主动释放去噪强度。最终输出既可写成粗到细 refinement 形式
+\[
+\hat s_h=p_h+K_h^{\mathrm{str}}\odot R_\theta(y_h^M,x_h,p_h,c_h),
+\]
+也可写成显式噪声估计形式
+\[
+\hat s_h=x_h-G_h^{\mathrm{den}}\odot \hat n_\theta(x_h,c_h,p_h),
+\]
+其中第二种形式用于防止 $D_\theta$ 退化为原始中心切片的微调。
+
+本文档对完整架构进行整体重构：一方面保留数据规范、HU 标定、OME-Zarr 层级选择、REG/HR 物理坐标对齐、残差池审计、patch-level injection、calibration proxy、结构子空间 proxy、噪声子空间 proxy、dynamic target 启用条件、训练状态机、理论误差分解、稳定性分析和消融设计等实现细节；另一方面将所有强假设改写为可量化、可实验验证、可失败定位的假设矩阵。训练不允许从一开始联合启用所有模块，而必须遵循 G0--G8 的层次化验证路径，并新增 G4.5 去噪强度审计阶段：先验证数据与几何口径，再验证 single-slice masked baseline，然后依次打开低通上下文、残差审计、残差门控、D 模块去噪强度释放、独立 proposal、局部 dynamic target 和短周期交替。每个阶段都定义最小训练预算、通过指标、失败动作与可回滚状态，从而避免大规模长时间训练后才发现假设失效。
+
+本文的理论定位是条件性稳定、审计型误差控制与双侧失效防御：既防止过平滑和结构误删，也防止 conservative identity collapse，即 $D_\theta(x_h,c_h,p_h)\approx x_h$ 的欠去噪退化。所有医学安全相关结论必须由 homogeneous ROI 噪声统计、NPS 幅度下降与形状保持、低频锚定、结构边缘保持、小结构/小病灶插入实验、输出残差噪声性、proposal qualification、动态目标局部启用记录和去噪强度区间共同支撑。
+\end{abstract}
+
+
+\tableofcontents
+\newpage
+
+
+
+
+\section{完整架构总览：粗到细非对称双反馈}
+
+\subsection{核心分工}
+
+本框架的核心不是让两个网络互相生成 clean label，而是将 clean recovery 拆成两个更可审计的子问题：
+\begin{equation}
+ s_h=s_h^{\mathrm{coarse}}+s_h^{\mathrm{detail}}.
+\end{equation}
+$P_\phi$ 估计低噪但允许偏平滑的 $s_h^{\mathrm{coarse}}$，记为 $p_h$；$D_\theta$ 在 $p_h$ 的基础上只恢复可信结构细节 $s_h^{\mathrm{detail}}$。因此，P 和 D 的功能不重复：P 不负责最终锐化，D 不负责全局粗去噪。
+
+\begin{equation}
+ P_\phi(x_h,u_h^-,u_h^+,c_h)
+\rightarrow (p_h,W_h^{\mathrm{adj}},W_h^{\mathrm{safety}},W_h^{\mathrm{hom}},K_h^{\mathrm{str}},\widehat\sigma_h,A_h,g_h^{\mathrm{ctx}}),
+\end{equation}
+\begin{equation}
+ D_\theta(y_h^M,x_h,p_h,c_h)=p_h+K_h^{\mathrm{str}}\odot R_\theta(y_h^M,x_h,p_h,c_h).
+\end{equation}
+这里 $u_h^\pm=\mathcal W_{h\pm1\to h}(\Pi_{\mathrm{lo/mid}}x_{h\pm1})$ 是受限中低频的相邻切片观测；$K_h^{\mathrm{str}}$ 是可信结构细节注入 mask；$A_h$ 是 residual injection modulation；$g_h^{\mathrm{ctx}}$ 是低通上下文可靠性。
+
+\subsection{P 的独立去噪动力}
+
+P 的主动力来自两类不依赖保守 D teacher 的自监督信号。第一是中心层 blind-spot / masked prediction：
+\begin{equation}
+\mathcal L_P^{\mathrm{bs}}
+=\mathbb E\left\|M_{\mathrm{bs}}\odot W_h^{\mathrm{hom}}\odot\left(P_\phi(x_h^{\mathrm{bs}},u_h^-,u_h^+,c_h)-x_h\right)\right\|_1.
+\end{equation}
+第二是相邻切片 noisy-to-noisy proposal：
+\begin{equation}
+\mathcal L_P^{\mathrm{adj}}
+=\mathbb E\left\|W_h^{\mathrm{adj}}\odot W_h^{\mathrm{safety}}\odot\left(p_h-\RobustFuse(u_h^-,u_h^+)\right)\right\|_1.
+\end{equation}
+blind-spot 机制阻断 identity shortcut；相邻切片 N2N 在层间一致区域提供独立噪声观测。二者共同让 $p_h$ 有能力脱离 REG，而不是复制 $x_h$ 或复制保守的 $D_{\bar\theta}$。
+
+\subsection{P 的结构保护}
+
+P 可以模糊，但不能改变低频解剖结构和明确结构区域。因此使用
+\begin{equation}
+\mathcal L_P^{\mathrm{lo}}=\left\|\Pi_{\mathrm{lo}}p_h-\Pi_{\mathrm{lo}}x_h\right\|_1,
+\end{equation}
+\begin{equation}
+\mathcal L_P^{\mathrm{str}}=\left\|W_h^{\mathrm{str}}\odot(p_h-x_h)\right\|_1,
+\end{equation}
+\begin{equation}
+\mathcal L_P^{\mathrm{edge}}=\left\|W_h^{\mathrm{str}}\odot(\nabla p_h-\nabla x_h)\right\|_1.
+\end{equation}
+这些保护项只在结构区域强约束，不能全图使用；否则会把 P 重新锁回 REG。
+
+\subsection{D 的结构细节精修}
+
+D 的职责不是全图锐化，而是在可信结构区域注入中心层细节 residual。为避免重新引入噪声，需要约束
+\begin{equation}
+\Pi_{\mathcal N}\left(K_h^{\mathrm{str}}\odot R_\theta\right)\approx0\quad \text{on }\Omega_{\mathrm{hom}},
+\end{equation}
+并允许
+\begin{equation}
+\Pi_{\mathcal S}\left(K_h^{\mathrm{str}}\odot R_\theta\right)\ne0\quad \text{only on trusted structure}.
+\end{equation}
+因此 D 的目标可分解为：homogeneous 区域跟随 $p_h$，结构区域锚定 $x_h$，中间区域通过近端融合过渡。
+
+\subsection{区域化近端 target}
+
+D 的训练 target 不应简单写成全局 $x_h+W(p_h-x_h)$，而应由区域化近端融合给出：
+\begin{equation}
+ t_h=\ProxFuse(x_h,p_h;W_h^{\mathrm{hom}},W_h^{\mathrm{str}},W_h^{\mathrm{adj}}),
+\end{equation}
+其理想定义为
+\begin{equation}
+ t_h=\argmin_t\left\{
+\frac{\lambda_{hom}}{2}\left\|W_h^{\mathrm{hom}}\odot(t-p_h)\right\|_2^2+
+\frac{\lambda_{str}}{2}\left\|W_h^{\mathrm{str}}\odot(t-x_h)\right\|_2^2+
+\tau\mathrm{TV}_{weak}(t)
+\right\}.
+\end{equation}
+实际实现中可用一阶近似：
+\begin{equation}
+ t_h=x_h+W_h^{\mathrm{fb}}\odot(p_h-x_h)+m_t\Delta_h^{\mathrm{mom}}.
+\end{equation}
+这里 $W_h^{\mathrm{fb}}=W_h^{\mathrm{safety}}\odot W_h^{\mathrm{adj}}\odot W_h^{\mathrm{warm/benefit}}$，$t_h$ 必须 stop-gradient。
+
+\subsection{D-to-P 反馈的重新定位}
+
+本框架中 $D\to P$ 不再是 clean supervision，而是诊断反馈。D 可以告诉 P：哪些区域 P 过度模糊、哪些结构 residual 较大、哪些区域 D/P 在结构子空间 disagreement 高、哪些 residual 不能通过审计。但 D 不应作为 P 的主要 target，否则会重新出现 $D\approx x_h\Rightarrow P\approx x_h$ 的闭环死锁。
+
+\section{引言与定位}
+
+
+
+
+
+\subsection{方案定位与核心贡献}
+
+TRACE-CT 的目标是构造一套适用于 CT 体数据的自监督去噪框架，使模型能够利用轴向邻层中的低频解剖先验，同时避免把邻层高频纹理、供体残差结构或辅助网络输出作为中心层答案的捷径。该方案从一开始就把三个角色分离：中心层 $x_h$ 是训练与推理的共同主体；邻层只提供低通、对齐、可门控的上下文 $c_h$；跨体积残差只提供经审计和标定的外生扰动 $z_d$。
+
+本文采用如下核心设计原则。
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{中心层主体一致性。} 训练输入定义为
+    \begin{equation}
+        y_h=x_h+\alpha_tA_hz_d,
+    \end{equation}
+    其中 $x_h$ 是真实中心含噪切片，$\alpha_tA_hz_d$ 是受控外生扰动。训练阶段与推理阶段共享同一中心层主体，因此理论分析只需控制外生扰动、mask 机制和上下文条件带来的偏差。
+
+    \item \textbf{低通 2.5D 上下文。} 相邻切片先经过形变对齐与低通投影，再被编码为上下文变量 $c_h$。该上下文用于提供粗尺度解剖域、器官位置、轴向趋势和对齐置信度，而不是提供可复制的中心层高频答案。
+
+    \item \textbf{低频 envelope 与可靠性估计。} 辅助网络 $P_\phi$ 估计低频密度包络、噪声尺度调制图、上下文可靠性、残差审计特征以及受限 coarse target proposal。该 proposal 不是训练主体，也不能无条件替代 $x_h$；它只通过置信 mask 和 EMA 延迟进入 $D$ 的动态监督目标。
+
+    \item \textbf{结构泄漏受控的外生残差。} 跨体积残差写为 $z_d=\xi_d+q_d$，其中 $\xi_d$ 是希望模拟的噪声成分，$q_d$ 是不可避免的供体结构泄漏。理论和实验都必须分别估计噪声标定误差与结构泄漏误差。
+
+    \item \textbf{masked 条件可识别性。} 训练可采用 block mask，使模型在 masked 区域上预测中心层目标，而不能直接复制同一位置像素。理论结论建立在可见邻域、低通上下文和 masked block 噪声条件独立的基础上，并显式保留 CT 噪声相关性造成的不可约偏差。
+
+    \item \textbf{近端块级交替稳定化。} 去噪器、低频 envelope/reliability estimator 与残差池审计采用 cycle-level 交替，并用 stop-gradient、EMA teacher 和近端项控制构造分布漂移。理论上只证明局部 stationarity 和偏差可审计性，不声称非凸深度网络的全局收敛。
+\end{enumerate}
+
+因此，本文的理论定位是：在可测假设下给出一套\textbf{泄漏受控、偏差显式、局部稳定}的 2.5D 自监督 CT 去噪框架。所有可能影响医学安全性的失败来源——邻层高频泄漏、残差结构污染、门控塌缩、微小结构不可预测性和交替训练漂移——都应被写成可估计误差项，而不是隐藏在单一平均指标中。
+
+
+
+
+\section{可验证重构原则、去噪强度放行与完整搭建路线}
+\label{sec:trace-verifiable-redesign}
+
+\subsection{重构目标：从模块堆叠改为证据链闭环}
+
+TRACE-CT 的核心修改不是增加更多模块，而是改变框架的工程哲学：任何会改变监督目标、训练输入分布、去噪强度或结构保护策略的模块，都必须先被独立验证，再进入联合系统。具体而言，训练图中的每一条路径都被划分为三类状态：
+\begin{enumerate}
+    \item \textbf{观测路径。} 包含中心层 $x_h$、相邻层 $x_{h-1},x_{h+1}$、REG/HR 坐标、HU 标定、窗口裁剪和归一化。该路径不允许被网络学习过程改变，只能被审计。
+    \item \textbf{构造路径。} 包含 mask、低通上下文 $c_h$、跨体积残差 $z_d$、残差注入图 $A_h$、动态目标 $t_h$ 和去噪强度 gate $G_h^{\mathrm{den}}$。该路径可以随训练状态改变，但必须由显式控制器记录阈值、放行条件和回退状态。
+    \item \textbf{学习路径。} 包含 $P_\phi$、$D_\theta$、EMA teacher、结构风险估计器、上下文门控和强度控制器。学习路径的输出不能直接改变数据路径；它只能通过 stop-gradient、mask 和状态机进入构造路径。
+\end{enumerate}
+
+因此，TRACE-CT 的完整搭建不应从端到端联合训练开始，而应从最小可验证单元开始。每个单元只回答一个问题：数据是否对齐、mask 是否阻断复制、上下文是否有益、残差是否像噪声、D 模块是否具有足够去噪强度、proposal 是否真的降低噪声、dynamic target 是否只在安全区域启用、交替反馈是否稳定。若某一层失败，训练必须停止在该层，而不是继续向后叠加模块。
+
+\subsection{双侧失效防御：既防过平滑，也防欠去噪}
+
+早期框架主要防御 over-smoothing、lesion removal 和 residual structure leakage；但安全门控过强会导致新的退化：
+\begin{equation}
+    \hat s_h=D_\theta(x_h,c_h,p_h)\approx x_h.
+\end{equation}
+这类 conservative identity collapse 的表面现象是结构保持率很高，但原因只是模型几乎没有修改图像。若 homogeneous ROI 噪声标准差、NPS 幅度和输出残差能量几乎不变，则模型并未真正产生 clean-oriented denoising。
+
+因此 TRACE-CT 必须同时给出去噪上界和下界。上界用于防止结构误删，下界用于防止欠去噪。理想输出应满足
+\begin{equation}
+    \text{too conservative}
+    \quad \leftarrow \quad
+    \text{acceptable denoising range}
+    \quad \rightarrow \quad
+    \text{too aggressive}.
+\end{equation}
+该原则引入 Denoising Strength Controller 与 G4.5 Denoising Strength Audit。D 模块不能只被结构保护 loss 约束，也必须在 homogeneous 低风险区域产生足够的噪声移除。
+
+\subsection{核心假设的证据分解}
+
+本文将理论假设分为五组。第一组是\emph{数据与几何假设}，回答 REG/HR 是否可比较、HU 口径是否一致、相邻切片是否可提供低通上下文。第二组是\emph{自监督可识别性假设}，回答 masked training 是否真正阻断 identity shortcut。第三组是\emph{残差外生性假设}，回答跨体积残差是否主要携带噪声而不是供体结构。第四组是\emph{去噪强度假设}，回答 $D_\theta$ 是否真的去除原始中心层噪声而不是只去除额外注入噪声。第五组是\emph{反馈安全假设}，回答 $P_\phi$ 的 proposal 是否在局部区域优于 noisy REG，且不会诱导 $D_\theta$ 抹除微小结构。
+
+对于每个假设，TRACE-CT 不使用“直觉成立”作为依据，而使用下列五元组：
+\begin{equation}
+\mathsf H_j=\left(\text{claim}_j,\text{observable}_j,\text{test}_j,\text{release}_j,\text{fallback}_j\right).
+\end{equation}
+其中 observable 是可计算指标，test 是小规模验证实验，release 是放行阈值，fallback 是失败时禁止进入的后续模块。
+
+\subsection{可量化假设矩阵}
+\label{subsec:quantified-assumption-matrix}
+
+表~\ref{tab:quantifiable-assumptions} 给出完整的可量化假设矩阵。阈值不应被理解为跨数据集固定常数，而应被理解为初始默认值。每个新数据集必须用 held-out volume 或 bootstrap patch 重新估计阈值；所有阈值、随机种子、体积划分、patch 坐标和 checkpoint hash 必须写入实验日志。
+
+\begin{longtable}{p{0.07\linewidth}p{0.18\linewidth}p{0.23\linewidth}p{0.26\linewidth}p{0.16\linewidth}}
+\caption{TRACE-CT 的可量化假设、验证指标、最小实验与失败动作。}\label{tab:quantifiable-assumptions}\\
+\toprule
+假设 & 要验证的主张 & 可观测量 & 最小验证实验 & 失败动作 \\
+\midrule
+\endfirsthead
+\toprule
+假设 & 要验证的主张 & 可观测量 & 最小验证实验 & 失败动作 \\
+\midrule
+\endhead
+H1 & HU 标定一致，REG 与 HR/多体积之间的强度口径可比较 & 空气/水/软组织 ROI 均值漂移；窗口内 percentile 差异；z-score 后分位数偏移 & 每个 volume 抽取 axial slabs，统计 ROI 均值与分位数，报告 median/IQR & 禁用跨体积 residual calibration；只允许 single-volume masked baseline \\
+H2 & REG/HR 或 REG/REG patch 的物理坐标对应成立 & 物理坐标误差 $d_{\max}$；重采样后边缘相关；中心裁剪偏移 & 对 landmarks 或自动 edge map 做对齐误差统计 & 禁用 HR validation 和 paired metric；只报告自监督 proxy \\
+H3 & 相邻层只提供低通上下文，而非高频答案 & $\|\Pi_{hi}c_h\|/\|\Pi_{hi}x_h\|$；邻层 high-pass 互相关 & 对齐前后分别计算 high-pass correlation 与 lesion-like blob transfer rate & 降低 cutoff；冻结 context encoder；必要时禁用邻层 \\
+H4 & block mask 阻断中心像素复制 & masked 区域原像素泄漏率；copy-baseline loss；masked gradient ratio & 使用 identity network / shallow CNN 进行 copy attack 测试 & 增大 block；改变 replacement；loss 仅限 masked pixels \\
+H5 & CT 噪声相关性在 mask 尺度下可控 & masked pixel 与 visible ring 的噪声自相关；variogram range & 在 homogeneous ROI 中估计噪声相关长度 $\ell_{corr}$ & mask block 尺度不足时不得训练；改用更大 block \\
+H6 & 残差候选主要是外生噪声而非供体结构 & $r_{lf}$、$r_{edge}$、$r_{struct}$、morphology score、directional streak score & 离线生成 candidates，计算 accepted/error 双轨统计 & 禁用 residual injection；只保留 safe perturbation \\
+H7 & 残差幅度与受体噪声尺度匹配 & relative std $\rho_{std}$；calibration proxy error $\epsilon_{cal}$；NPS shape distance & accepted pool 与 receiver homogeneous ROI 比较 NPS 与 MAD/std & 降低 $\rho_t$ 或重标定 $\alpha_t$；无法匹配则关闭残差 \\
+H8 & receiver patch-level injection 不改变主体结构 & 注入前后 low-frequency drift；edge hallucination score；train-infer shift $S_t$ & 对相同 receiver patch 注入多个 donor residual，统计 shift 上界 & 缩小 patch canvas；降低 $\alpha_t$；开启 fallback \\
+H9 & $D_\theta$ 不是保守恒等映射 & $r_D^{hom}$、$e_D$、$A_{NPS}$、$d_{shape}$、$\eta_{res-edge}$ & G4.5 中冻结 proposal，不启用 dynamic target，仅评估 $D(x_h,c_h)$ & 增强 homogeneous denoising loss；提高 $G^{den}$ 下界；禁止进入 G5/G6 \\
+H10 & D 输出残差像噪声而不是结构 & residual-edge correlation；low-frequency residual ratio；structure-mask overlap & 计算 $x_h-\hat s_h$ 与 edge/structure map 的相关性 & 降低 denoising gate；增强结构保护；重新标定 strength loss \\
+H11 & D 去噪不过度平滑 & synthetic lesion contrast retention；edge slope；NPS shape preservation & 插入 small blob/line/calcification-like phantom，比较输出前后 contrast & 降低 strength release；缩小 homogeneous mask；增强 edge anchor \\
+H12 & $P_\phi$ 在同质区域具有独立去噪收益 & $r_P^{hom}$；NPS amplitude reduction；low-frequency anchor error & 冻结 $D$，只训 $P$，在 held-out homogeneous ROI 评估 & 不允许 dynamic target；$P$ 只作 reliability estimator \\
+H13 & $P_\phi$ 不抹除结构区域 & edge retention；synthetic lesion contrast ratio；micro-structure recall & 插入小 blob/line/calcification-like phantom，比较 $p_h$ 与 $x_h$ & $W^{fb}=0$ 于风险区域；增强 structure anchor \\
+H14 & dynamic target 局部优于 fixed REG target & $\Delta$ noise std、$\Delta$ lesion contrast、$\Delta$ edge error；target drift map & 只在 $W^{fb}>0$ 区域短训 $D$，与 fixed target 对照 & dynamic target 降级为 ablation，不作为主路线 \\
+H15 & 短周期交替不会形成闭环振荡 & D/P disagreement、target drift、cycle gain、EMA lag error & 3--5 个 short cycles，记录每 cycle 指标单调性与高分位漂移 & 固定 $P$ 或固定 $D$；增加 EMA lag/近端项 \\
+H16 & 模型选择不依赖隐藏监督 & validation split、HR 使用范围、proxy selection rule 可审计 & 记录所有模型选择指标；区分 self-supervised selection 与 HR-report-only & 若使用 HR 选模型，不能声称 fully self-supervised selection \\
+\bottomrule
+\end{longtable}
+
+\subsection{层次化验证总路线}
+\label{subsec:hierarchical-validation-route}
+
+完整搭建必须遵循 G0--G8 的层次化路径。每个阶段都有明确输入、训练模块、冻结模块、最小预算、通过条件和失败归因。除非当前阶段通过，否则不得启用下一阶段。
+
+\paragraph{G0: 数据、HU 与几何审计。}
+不训练任何网络，只检查 HU 标定、窗口裁剪、归一化、OME-Zarr 层级、REG/HR shape、物理 spacing、chunk 与 patch 的关系、volume split、donor/receiver 隔离和 HR 是否仅用于 validation。通过条件是 H1--H2 通过，且输出 data audit JSON。
+
+\paragraph{G1: 中心层 masked single-slice baseline。}
+只训练 $D_\theta(y_h^M,x_h)$，不使用邻层、残差、$P_\phi$ 和 dynamic target。目标是验证 block mask 与 masked-only loss 能阻断 identity shortcut，并产生可测的 homogeneous noise reduction。
+
+\paragraph{G2: 低通邻层上下文增益验证。}
+在 G1 基础上加入 $c_h$，但必须冻结或弱训练 context encoder，且强制 $\Pi_{hi}c_h$ 很小。通过条件是相较 G1，结构边缘稳定性、低频一致性或 homogeneous denoising 有改进，同时高频泄漏指标不升高。
+
+\paragraph{G3: 残差候选池离线审计。}
+不训练 $D$，只从 donor volumes 中生成 residual candidates，执行 patch-level audit。通过条件是 accepted/error 双轨统计显示 rejected pool 显著更结构化，accepted pool 与 receiver 噪声 proxy 的幅度和谱形状匹配。
+
+\paragraph{G4: 受审计残差门控训练。}
+在 G2 的安全主干上加入 $\rho_t\alpha_t A_hz_d$，但 $\rho_t$ 必须从 $0$ soft ramp，并受 $S_t$、$\mathcal E_{acc}$、$\pi_{pass}$ 和 TTL 控制。通过条件是 residual-gated 模型优于 G2，且 train-infer shift、edge hallucination 和 lesion contrast loss 不越界。
+
+\paragraph{G4.5: D 模块去噪强度审计。}
+该阶段不启用 dynamic target，也不联合训练 $P_\phi$。目标是单独回答：$D_\theta$ 是否已经具备去除原始中心层噪声的能力，而不是只会去除额外注入噪声。核心通过条件包括
+\begin{equation}
+    r_D^{hom}\le 0.85,\qquad e_D\ge 0.10,\qquad
+    \eta_{res-edge}\le 0.10,\qquad c_{lesion}\ge 0.90.
+\end{equation}
+若 $r_D^{hom}>0.90$ 或 $e_D<0.05$，判定为 conservative identity collapse，不允许进入 G5/G6。
+
+\paragraph{G5: 独立 proposal qualification。}
+冻结 $D$ 或只使用 G2/G4/G4.5 checkpoint 作为参考，单独训练 $P_\phi$。通过条件是 $P$ 在 homogeneous 区域有独立去噪动力，同时在结构区域不抹除边缘和小结构。
+
+\paragraph{G6: 局部 dynamic target 短训。}
+只在 $W_h^{fb}>0$ 的低风险区域启用 $t_h=x_h+W_h^{fb}\odot \SG[p_h-x_h]$，并使用固定 $P_{\bar\phi}$ 构造 target。通过条件是 low-risk dynamic target 优于 fixed target，且不牺牲 small lesion / edge retention。
+
+\paragraph{G7: 短周期非对称交替。}
+只允许短周期交替，不允许长时间自由联合训练。每个 cycle 后必须重新计算 D/P disagreement、target drift、cycle gain、train-infer shift、residual accepted statistics 和 Denoising Strength Audit。
+
+\paragraph{G8: 完整系统有限放行。}
+只有 G0--G7 全部通过，才允许完整系统训练。即便进入完整训练，系统也必须保留 hard fallback：当 residual pool 过期、accepted error 越界、target drift 扩散、结构风险区域 feedback 打开、D 去噪强度回落到 identity-like 区间或 validation proxy 出现反向趋势时，自动回退到最近通过阶段。
+
+\subsection{最小训练预算与早停逻辑}
+
+为了避免大规模长训后才发现假设失效，TRACE-CT 规定每个阶段先执行 short-run audit。short-run 不追求最终性能，只回答“是否值得继续”。推荐默认预算如下：
+\begin{itemize}
+    \item G1/G2: 每个设置 $1$--$3$ 个短 epoch，patch 数量控制在完整训练的 $5\%$--$10\%$；
+    \item G3: 不训练网络，至少审计 $10^4$ 个 residual patch candidates，或每个 donor volume 至少 $500$ 个 candidates；
+    \item G4: residual ramp 只跑到 $\rho_t\le 0.5$ 的 warmup 区间，先观察 train-infer shift；
+    \item G4.5: 只评估 $D(x_h,c_h)$ 的去噪强度、输出残差噪声性和 synthetic lesion retention，不引入新的 teacher；
+    \item G5: $P$ 的 proposal qualification 只在 held-out homogeneous ROI 与 synthetic structure phantom 上评估；
+    \item G6: dynamic target 只开放低风险 mask 的一小部分分位数，例如 top-$q$ benefit 且 structure-risk 低于阈值的区域；
+    \item G7: 只跑 $3$--$5$ 个 cycle，每个 cycle 结束必须输出 drift report 和 strength report。
+\end{itemize}
+
+早停规则不是只看 validation loss，而是看失败源指标。若 validation loss 下降但结构风险、target drift、lesion contrast retention 或 denoising strength interval 恶化，则视为失败。若 homogeneous std 下降但 NPS shape 严重改变，也视为伪去噪。若 D/P agreement 提升但二者同时贴近 noisy REG，则视为闭环锁死。
+
+\subsection{证据日志与可复现文件}
+
+完整实现必须在每次训练 run 中保存下列文件：
+\begin{enumerate}
+    \item \texttt{data\_audit.json}: HU 标定、spacing、OME-Zarr level、volume split、REG/HR 对齐结果；
+    \item \texttt{mask\_audit.json}: block size、replacement rule、copy attack score、masked-only loss ratio；
+    \item \texttt{context\_audit.json}: cutoff、alignment error、high-frequency leakage score、context gate histogram；
+    \item \texttt{residual\_pool\_audit.json}: accepted/error 双轨统计、NPS、relative std、TTL、donor hash；
+    \item \texttt{denoising\_strength\_audit.json}: $r_D^{hom}$、$e_D$、$A_{NPS}$、$d_{shape}$、$\eta_{res-edge}$、$c_{lesion}$、identity-collapse flag；
+    \item \texttt{proposal\_qualification.json}: $r_P^{hom}$、low-frequency anchor、structure retention、synthetic lesion tests；
+    \item \texttt{dynamic\_target\_audit.json}: $W^{fb}$ 覆盖率、target drift、benefit map、risk-region leakage；
+    \item \texttt{cycle\_stability.json}: D/P disagreement、EMA lag、cycle gain、fallback trigger；
+    \item \texttt{model\_selection.json}: 自监督 proxy 与可选 HR-report-only 指标的分离记录。
+\end{enumerate}
+
+这些文件是 TRACE-CT 的一部分，而不是额外工程附件。若没有这些证据，理论假设不能被声称成立。
+
+\subsection{完整阶段表}
+
+\begin{longtable}{p{0.07\linewidth}p{0.18\linewidth}p{0.19\linewidth}p{0.24\linewidth}p{0.22\linewidth}}
+\caption{TRACE-CT 的完整搭建阶段、允许训练模块与放行条件。}\label{tab:release-stages}\\
+\toprule
+阶段 & 允许状态 & 禁止状态 & 放行证据 & 失败定位 \\
+\midrule
+\endfirsthead
+\toprule
+阶段 & 允许状态 & 禁止状态 & 放行证据 & 失败定位 \\
+\midrule
+\endhead
+G0 & 全部 Off，只做审计 & 禁止训练 & HU、spacing、level、split、alignment 全部通过 & 数据口径或几何错配 \\
+G1 & $D$: Train；$C,Z,P,T$: Off & 禁止邻层、残差、proposal & masked copy attack 失败；非恒等；小结构保持 & mask/loss 问题 \\
+G2 & $C$: Audit/Train；$D$: Train & 禁止 high-pass context & context gain 为正；high-frequency leakage 不升高 & 对齐或低通设计问题 \\
+G3 & $Z$: Audit & 禁止 residual 进入训练输入 & accepted/error 分离；NPS/std 匹配 & 残差池污染 \\
+G4 & $Z$: Train；$D$: Train & 禁止 dynamic target & residual-gated 优于 G2；shift 可控 & 残差标定或注入问题 \\
+G4.5 & $D$: Audit；$P,T$: Off & 禁止 proposal 和 dynamic target & $D$ 去噪强度落入目标区间；输出残差像噪声 & conservative identity 或过平滑 \\
+G5 & $P$: Train/Audit；$D$: Frozen or Eval & 禁止 $P$ 改变 $D$ target & proposal homogeneous benefit 与结构保持同时成立 & proposal 过平滑或无收益 \\
+G6 & $T$: Audit/Train；$P$: EMA Frozen；$D$: Train & 禁止全图 target 替换 & low-risk dynamic target 优于 fixed target & feedback mask 错误 \\
+G7 & $P,D,T$: short-cycle Train & 禁止长周期自由联合训练 & cycle drift 不扩散；D/P gain 受控；D strength 不回落 & 闭环振荡或 identity collapse \\
+G8 & 全系统有限 Train & 禁止无审计长训 & 所有日志稳定；fallback 未触发 & 数据集或 proxy 不适配 \\
+\bottomrule
+\end{longtable}
+
+
+\section{数学基础与符号}
+
+\subsection{符号定义表}
+
+为了便于后续推导与理论审计，表~\ref{tab:symbols-coreA} 汇总 TRACE-CT 的核心符号。本文采用中心层条件的 masked noisier-to-noisy 设计：$P_\phi$ 只生成低频 envelope、上下文可靠性和噪声调制相关量；中心层 noisier 输入定义为 $y_h=x_h+\alpha_tA_hz_d$。
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{llp{0.55\linewidth}}
+\toprule
+符号 & 维度/类型 & 物理与几何意义 \\
+\midrule
+$z$ & $\mathbb{R}$ & CT 扫描的轴向坐标。 \\
+$h,c$ & $\mathbb{N}$ & 切片层数索引；$c$ 常表示受体中心层。 \\
+$x_h,s_h,n_h$ & $\mathbb{R}^m$ & 第 $h$ 层含噪切片、潜在干净结构和成像/重建噪声，$x_h=s_h+n_h$。 \\
+$x_{h-1:h+1}$ & 三个 $\mathbb R^m$ 切片 & 仅作为构造 2.5D 低通上下文的局部窗口，不作为三通道联合监督目标。 \\
+$\mathcal W_{h\pm1\to h}$ & 算子 & 将相邻切片或低通特征重采样到中心层坐标系的受限形变对齐算子。 \\
+$\Pi_{\mathrm{lo}},\Pi_{\mathrm{hi}}$ & 投影算子 & 低频上下文投影与高频泄漏审计投影。 \\
+$u_{h,-},u_{h,+}$ & $\mathbb R^m$ 或特征图 & 经形变对齐与低通投影后的上下邻层上下文。 \\
+$c_h$ & $\mathbb{R}^r$ & 由 $u_{h,-},u_{h,+}$ 编码得到的低通邻层上下文。 \\
+$g_h,g_h^{\mathrm{prior}}$ & $[0,1]^m$ & 学习门控与由对齐误差诱导的门控先验；用于限制不可信上下文。 \\
+$P_\phi$ & 网络算子 & 粗到细提案与反馈控制器，输出 envelope、调制、门控、去噪强度、扰动估计、feedback mask 和受限 coarse target proposal。 \\
+$B_h,A_h$ & $\mathbb R^m$/对角算子 & 低频密度包络与噪声调制图，$A_h=\diag\{a_\phi(B_h,\widehat\sigma_h)\}$，并要求高频泄漏受控。 \\
+$D_\theta$ & 网络算子 & 中心层条件去噪器，$D_\theta:\mathbb R^m\times\mathbb R^r\to\mathbb R^m$。 \\
+$R_0,R_c$ & 网络算子 & 中心层残差分支和上下文条件残差分支。 \\
+$\hat r_d,z_d$ & $\mathbb R^m$ & 供体体积中抽取的高通残差及其归一化形式。 \\
+$\xi_d,q_d$ & $\mathbb R^m$ & $z_d=\xi_d+q_d$ 中的可标定噪声成分和结构泄漏成分。 \\
+$M_h$ & $\{0,1\}^m$ & block mask；$M_h(i)=1$ 表示该像素或块参与 masked 训练损失。 \\
+$y_h$ & $\mathbb R^m$ & 中心层 noisier 输入，默认 $y_h=x_h+\alpha_tA_hz_d$；masked 形式见式~\eqref{eq:masked-y-gated-auditA}。 \\
+$D_{\bar\theta},P_{\bar\phi}$ & 网络算子 & 去噪器与粗到细提案与反馈控制器的 EMA teacher。 \\
+$\rho_\varepsilon$ & 标量函数 & Charbonnier 鲁棒惩罚函数。 \\
+$K_\sigma,K_{\mathrm{low}},K_{\mathrm{block}}$ & 滤波核 & 高斯平滑、轻度低通和块级强低通密度包络核。 \\
+$\epsilon_{\mathrm{ctx}},\epsilon_{\mathrm{jac}}$ & $\mathbb R_+$ & 上下文高频泄漏界与去噪器对上下文高频分量的 Jacobian 敏感性界。 \\
+$\epsilon_{\mathrm{struct}},\epsilon_{\mathrm{cal}}$ & $\mathbb R_+$ & 残差结构泄漏误差与注入噪声分布标定误差。 \\
+$\epsilon_{\mathrm{mod}},\epsilon_{\mathrm{shift}}$ & $\mathbb R_+$ & 调制图高频泄漏与训练--推理输入分布偏移。 \\
+$\gamma_D,\gamma_P$ & $\mathbb R_+$ & 去噪器和目标估计器的近端项强度。 \\
+$C_A,C_R$ & $\mathbb R_+$ & 闭环中去噪误差到残差泄漏、残差泄漏到去噪误差的有效增益。 \\
+\bottomrule
+\end{tabular}
+\caption{TRACE-CT 的核心数学符号定义及意义。}
+\label{tab:symbols-coreA}
+\end{table}
+
+\subsection{数据模型}
+
+单层观测模型为
+\begin{equation}
+\label{eq:observation-model}
+    x_h=s_h+n_h,
+\end{equation}
+其中 $s_h$ 是潜在干净结构，$n_h$ 是采集噪声、量子噪声、重建核噪声与插值伪影的合成项。相邻切片仅用于构造受控上下文，不与中心切片共同组成多通道输出目标：
+\begin{equation}
+\label{eq:context-construction-coreA}
+    u_{h,-}=\Pi_{\mathrm{lo}}\mathcal W_{h-1\to h}(x_{h-1}),
+    \qquad
+    u_{h,+}=\Pi_{\mathrm{lo}}\mathcal W_{h+1\to h}(x_{h+1}),
+\end{equation}
+\begin{equation}
+\label{eq:context-encoder-coreA}
+    c_h=G_\psi(u_{h,-},u_{h,+}).
+\end{equation}
+这里的低通投影并不意味着邻层信息无用；它只排除邻层高频图像作为中心层答案的捷径。邻层仍然可以提供器官位置、轴向结构趋势、局部厚度变化、噪声尺度先验和对齐可信度。
+
+本文的 noisier-to-noisy 训练输入定义为
+\begin{equation}
+\label{eq:y-coreA-basic}
+    y_h=x_h+\zeta_h,
+    \qquad
+    \zeta_h=\rho_t\alpha_tA_hz_d+(1-\rho_t)\beta_t\zeta_{\mathrm{safe}}.
+\end{equation}
+其中 $z_d$ 来自供体体积的审计残差池，$A_h$ 是低频 envelope 与局部噪声尺度共同调制的注入图，$\rho_t$ 是软残差控制强度。式~\eqref{eq:y-coreA-basic} 的关键约束是：训练和推理共享同一个主体 $x_h$，差异只体现在额外扰动 $\zeta_h$ 上；本框架 额外允许监督目标由 $x_h$ 局部更新为动态目标 $t_h$。
+
+\subsection{基础算子}
+
+\begin{definition}[平滑、高通、低通投影与块级密度核]
+令 $K_\sigma$ 为离散高斯平滑核，$K_{\mathrm{low}}$ 为轻度低通核，$K_{\mathrm{block}}$ 为尺度显著大于边缘宽度和典型小病灶尺度的块级强低通核。定义
+\begin{equation}
+    G_\sigma u:=\nabla(K_\sigma*u),
+    \qquad
+    \cH_\tau u:=u-K_\tau*u,
+    \qquad
+    B(u):=K_{\mathrm{block}}*u.
+\end{equation}
+$\Pi_{\mathrm{lo}}$ 表示低频上下文投影，$\Pi_{\mathrm{hi}}$ 表示高频泄漏审计投影。假设这些线性算子在局部域内有界，且 $\norm{K_{\mathrm{block}}}_{2\to2}\le1$。
+\end{definition}
+
+\begin{definition}[Charbonnier 惩罚]
+\begin{equation}
+    \rho_\varepsilon(r):=\sqrt{r^2+\varepsilon^2},
+    \qquad
+    \varepsilon>0.
+\end{equation}
+其导数满足 $\abs{\rho_\varepsilon'(r)}\le1$。本文仍使用 Charbonnier 损失作为工程训练目标，但在理论可识别性处以平方风险或局部 Lipschitz surrogate 进行分析，并用 $\epsilon_\rho$ 记录二者差异。
+\end{definition}
+
+\begin{definition}[Sliced-Wasserstein 标定距离]
+对高维图像残差分布，直接估计 $W_1$ 往往不稳定。本文允许使用 sliced-Wasserstein 距离作为可执行替代：
+\begin{equation}
+    \SWD(\mathcal P,\mathcal Q)
+    :=\E_{v\sim\mathbb S^{m-1}}
+    W_1\big(\mathcal L(\langle v,U\rangle),\mathcal L(\langle v,V\rangle)\big),
+\end{equation}
+其中 $U\sim\mathcal P$，$V\sim\mathcal Q$。实际实现中可用随机投影、频带投影或局部 patch 投影近似。
+\end{definition}
+
+
+\section{中心层条件去噪系统架构}
+
+\subsection{三通道去噪器的必要性与设计风险}
+
+在 2.5D CT 去噪中，最自然的形式是把相邻三层堆叠为
+\begin{equation}
+    X_h=[x_{h-1},x_h,x_{h+1}]^\top,
+    \qquad
+    D_\theta:\mathbb R^{3m}\to\mathbb R^{3m}.
+\end{equation}
+这种设计有合理动机：薄层 CT 中的器官边界、骨皮质、肺纹理和软组织轮廓在轴向上通常连续；相邻层可以帮助判断某个局部高频结构是随机噪声还是真实解剖延续。因此，本文并不否定 2.5D 信息。问题在于，完整三通道输入输出会把“中心层待去噪图像”“邻层上下文”“侧通道监督目标”和“残差注入路径”混在一起，导致理论上难以区分有效上下文和答案泄漏。
+
+滑窗训练尤其容易放大该问题。同一张切片 $x_h$ 会在不同样本中分别扮演中心目标、上邻层输入、下邻层输入和侧通道输出：
+\begin{equation}
+    X_{h-1}=[x_{h-2},x_{h-1},x_h]^\top,
+    \quad
+    X_h=[x_{h-1},x_h,x_{h+1}]^\top,
+    \quad
+    X_{h+1}=[x_h,x_{h+1},x_{h+2}]^\top .
+\end{equation}
+若再对三通道同时回归，模型可以通过统计重叠学习隐式复制路径，而不一定学到真正的中心层去噪映射。更严重的是，层特异结构往往不在邻层中重复出现：微小钙化、低对比结节、骨小梁裂纹、血管分叉和局灶性病变都可能只存在于一层或很少几层中。若模型把“邻层中不存在的高频结构”系统性解释为噪声，医学安全性会受到影响。
+
+因此，本文采用如下角色分离原则：
+\begin{equation}
+\label{eq:role-separation-coreA}
+    \text{中心层 noisy 主体 }x_h
+    \quad\perp_{\mathrm{role}}\quad
+    \text{低通邻层上下文 }c_h
+    \quad\perp_{\mathrm{role}}\quad
+    \text{跨体积外生扰动 }z_d.
+\end{equation}
+这里的 $\perp_{\mathrm{role}}$ 表示功能角色解耦，而不是概率独立。$x_h$ 是训练和推理的共同主体；$c_h$ 只提供低频、对齐、门控后的宏观条件；$z_d$ 只提供外生噪声扰动。该设计保留 2.5D 的解剖价值，同时显式切断三通道高频答案泄漏路径。
+
+\begin{remark}[为什么不能简单回到单切片]
+如果完全删除邻层，理论会更简单，但会丢失 CT 体数据最有价值的轴向一致性先验。本文的目标不是单切片化，而是把邻层限定为低通条件变量。这使模型仍能利用体数据结构，同时把病灶抹除和 shortcut learning 的风险写成可测误差项。
+\end{remark}
+
+\subsection{低通形变邻层上下文}
+
+相邻切片先经受限形变对齐和低通投影：
+\begin{equation}
+\label{eq:ctx-lowpass-align-coreA}
+    u_{h,-}=\Pi_{\mathrm{lo}}\mathcal W_{h-1\to h}(x_{h-1}),
+    \qquad
+    u_{h,+}=\Pi_{\mathrm{lo}}\mathcal W_{h+1\to h}(x_{h+1}).
+\end{equation}
+这里的 $\mathcal W$ 不应被理解为任意自由光流网络。若使用 deformable convolution、dense optical flow 或 offset network，则形变场必须受到低通输入、幅值裁剪和 TV 正则约束：
+\begin{equation}
+    \E\operatorname{TV}(o_{h\pm1\to h})\le\epsilon_{\mathrm{tv}},
+    \qquad
+    \norm{o_{h\pm1\to h}}_\infty\le o_{\max}.
+\end{equation}
+否则 $\mathcal W$ 本身可能成为高频复制器，将邻层边缘或伪影扭曲到中心层。
+
+上下文编码为
+\begin{equation}
+\label{eq:context-code-coreA}
+    c_h=G_\psi(u_{h,-},u_{h,+}),
+\end{equation}
+并满足高频泄漏审计：
+\begin{equation}
+\label{eq:ctx-hi-bound-coreA}
+    \E\norm{\Pi_{\mathrm{hi}}c_h}\le\epsilon_{\mathrm{ctx}}.
+\end{equation}
+该条件可以通过频谱能量、边缘相关性和随机 high-frequency probing 估计。若 $\epsilon_{\mathrm{ctx}}$ 较大，说明上下文仍然携带邻层答案，必须增大低通尺度、降低上下文分辨率或加强门控。
+
+\subsection{上下文可靠性门控与防塌缩约束}
+
+本文不直接使用 $\lambda_{\mathrm{gate}}\E\norm{g_h}_1$ 作为唯一门控正则，因为该项虽然能降低泄漏风险，但也可能导致 $g_h\to0$，使模型退化为单切片去噪器。因此，门控正则采用“对齐先验 + 防塌缩”的形式。定义低频邻层一致性误差
+\begin{equation}
+\label{eq:align-uncertainty-coreA}
+    u_h^{\mathrm{err}}=\norm{u_{h,-}-u_{h,+}},
+\end{equation}
+以及门控先验
+\begin{equation}
+\label{eq:gate-prior-coreA}
+    g_h^{\mathrm{prior}}=\exp(-\tau_g\SG(u_h^{\mathrm{err}})).
+\end{equation}
+实际门控可以由小网络学习：
+\begin{equation}
+\label{eq:gate-learned-coreA}
+    g_h=\sigma\big(U_\omega(x_h^{\mathrm{lo}},\SG(u_{h,-}),\SG(u_{h,+}),\SG(u_h^{\mathrm{err}}))\big),
+    \qquad
+    x_h^{\mathrm{lo}}=K_{\mathrm{low}}*x_h.
+\end{equation}
+训练时使用
+\begin{equation}
+\label{eq:gate-loss-coreA}
+    \cL_{\mathrm{gate}}
+    =\lambda_{\mathrm{gp}}\E\norm{g_h-g_h^{\mathrm{prior}}}_1
+    +\lambda_{\mathrm{col}}
+    \left[g_{\min}-\E(g_h\mid u_h^{\mathrm{err}}<\delta_g)\right]_+.
+\end{equation}
+第一项使门控尊重对齐可信度；第二项防止模型在对齐可靠区域无理由关闭上下文。这样，邻层不可信时模型可自动退化为中心层去噪，但邻层可信时仍必须利用 2.5D 条件。
+
+
+\subsection{粗到细提案与反馈控制器：从 envelope 到受限 coarse target proposal}
+
+在 本框架中，$P_\phi$ 不再只是低频 envelope / reliability estimator。它被重新定义为\emph{粗到细提案与反馈控制器}，但其职责仍然受到严格限制：它不能生成训练输入主体，也不能全图替代 REG target；它只能在可审计区域提供延迟的、置信加权的 coarse target proposal。形式上，$P_\phi$ 接收中心层低频主体、邻层低通上下文、对齐误差以及当前训练输入构造中的已知扰动，输出
+\begin{equation}
+\label{eq:Pphi-coreB-output}
+    (B_h,r_h,A_h,g_h^{\mathrm{ctx}},\lambda_h^{\mathrm{den}},\widehat\nu_h,\widehat\sigma_h,W_h,\tilde s_h^P)
+    =P_\phi(\mathcal I_h^{P}),
+\end{equation}
+其中
+\begin{equation}
+\label{eq:P-input-coreB}
+    \mathcal I_h^{P}=\Big(\SG(K_{\mathrm{block}}*x_h),\SG(u_{h,-}),\SG(u_{h,+}),\SG(u_h^{\mathrm{err}}),\SG(y_h^M-x_h),\SG(M_h)\Big).
+\end{equation}
+各输出的含义如下：$B_h$ 是低频密度包络；$r_h$ 是供残差审计使用的低维可靠性特征；$A_h$ 是残差注入调制图；$g_h^{\mathrm{ctx}}$ 是上下文可靠性门控；$\lambda_h^{\mathrm{den}}$ 是中心层去噪强度控制；$\widehat\nu_h$ 是对已知输入扰动 $\nu_h=y_h^M-x_h$ 的估计；$\widehat\sigma_h$ 是局部噪声尺度估计；$W_h\in[0,1]^m$ 是 feedback confidence mask；$\tilde s_h^P$ 是受限 coarse target proposal。
+
+该定义体现 本框架的第一个反馈方向：\textbf{$D$ 的输入构造进入 $P$ 的监督}。由于训练时 $\nu_h=y_h^M-x_h$ 是已知构造量，$P_\phi$ 可以被要求识别“哪些变化来自人工注入扰动、哪些区域更像结构、哪些区域适合反馈目标更新”。这比仅让 $P_\phi$ 输出一个低频 modulation map 更强，也更贴合实际 under-denoising 问题。
+
+为了避免 $P_\phi$ 退化为危险的 pseudo-clean generator，本文对 $P$ 输出施加四类约束。第一，包络与审计特征仍需低通：
+\begin{equation}
+\label{eq:envelope-hi-bound-coreB}
+    \E\norm{\Pi_{\mathrm{hi}}B_h}\le\epsilon_B,
+    \qquad
+    \E\norm{\Pi_{\mathrm{hi}}r_h}\le\epsilon_r.
+\end{equation}
+第二，coarse target proposal 在低频上不得偏离中心层主体过多：
+\begin{equation}
+\label{eq:p-lowfreq-anchor-coreB}
+    \E\norm{\Pi_{\mathrm{lo}}(\tilde s_h^P-x_h)}\le\epsilon_{P,\mathrm{lo}}.
+\end{equation}
+第三，在结构风险区域 $\Omega_{\mathcal S}$ 中，proposal 必须被 REG 锚定：
+\begin{equation}
+\label{eq:p-structure-anchor-coreB}
+    \E\norm{W_{\mathcal S}\odot(\tilde s_h^P-x_h)}\le\epsilon_{P,\mathcal S},
+\end{equation}
+其中 $W_{\mathcal S}$ 可由强边缘、骨/血管候选 mask、金属伪影 mask、形态学细长结构响应和小病灶保护区域构造。第四，feedback mask 不能由 $P$ 任意选择，而必须由结构风险、D/P agreement、时序稳定性和审计质量共同约束：
+\begin{equation}
+\label{eq:feedback-mask-coreB}
+    W_h=\Psi_{\mathrm{fb}}\Big(
+    H_{\mathrm{hom}}(x_h),
+    1-H_{\mathrm{edge}}(x_h),
+    1-H_{\mathcal S}(x_h),
+    \Agree(D_{\bar\theta},P_{\bar\phi}),
+    \Stab(P_{\bar\phi}),
+    Q_{\mathrm{audit}}
+    \Big).
+\end{equation}
+直观上，$W_h$ 应在 homogeneous soft-tissue/background-like 噪声区域升高，在骨边缘、血管、金属伪影、疑似微结构和 D/P disagreement 区域降低。
+
+噪声调制图仍定义为
+\begin{equation}
+\label{eq:modulation-coreB}
+    A_h=\diag\{a_\phi(B_h,\widehat\sigma_h)\},
+    \qquad
+    0<a_{\min}\le a_\phi\le a_{\max}<\infty.
+\end{equation}
+$a_\phi$ 可以是单调标定函数、分段线性函数或轻量 MLP，但其输入必须由低频 envelope 和噪声尺度估计组成。这样，$A_h$ 负责残差注入尺度，$W_h$ 负责监督目标更新置信度，二者不能混用。
+
+\begin{remark}[与早期 pseudo-clean generator 的区别]
+早期危险路径是 $P_\phi(\text{邻层})\to\tilde s_h$，然后把 $\tilde s_h$ 作为训练主体或全图标签。这会把邻层预测误差直接注入去噪器，并可能抹除中心层特异结构。本框架中的 $\tilde s_h^P$ 只作为 EMA 延迟后的 coarse target proposal，并且只通过 $W_h$ 在低风险区域改变监督目标；在结构区域 $W_h\approx0$，监督目标退回 $x_h$。因此，本框架不是回退到无约束 pseudo-clean，而是把目标更新写成可审计、可关闭、可消融的双互反馈机制。
+\end{remark}
+
+
+\subsection{独立同质区域去噪动力源}
+\label{subsec:coreC-independent-homogeneous-pressure}
+
+常规双反馈设计 的双互反馈机制解决了监督对象可以从 REG 局部更新的问题，但仍存在一个闭环锁死风险：若 $D_{\bar\theta}(x_h,c_h)\approx x_h$，则 $D\to P$ 的延迟监督会使 $\tilde s_h^P\approx x_h$，从而 $t_h\approx x_h$。因此，本框架 引入一个不完全依赖 $D$ teacher 的独立去噪动力源：在同质安全区域中，$P$ 的 proposal 必须降低噪声子空间能量，同时保持低频结构和结构子空间不漂移。
+
+定义同质安全区域
+\begin{equation}
+\label{eq:omega-hom-coreC}
+    \Omega_{\mathrm{hom}}
+    =\{i:\ H_{\mathrm{hom}}(i)=1,\ H_{\mathcal S}(i)=0,\ H_{\mathrm{edge}}(i)=0,\ H_{\mathrm{metal}}(i)=0\}.
+\end{equation}
+其中 $H_{\mathrm{hom}}$ 可由局部方差、局部梯度、结构 tensor 各向异性、HU window 稳定性和 TTA 稳定性共同构造。$H_{\mathcal S}$ 表示结构风险，包括骨边缘、血管样细长结构、疑似微小病灶、钙化点、裂纹、金属伪影边界以及方向性重建伪影。
+
+定义噪声子空间投影 $\Pi_{\mathcal N}$。它不等于全部高频，而是经过结构风险排除后的噪声频带投影：
+\begin{equation}
+\label{eq:noise-subspace-coreC}
+    \Pi_{\mathcal N}u
+    = (1-H_{\mathcal S})\odot \BPF_{[f_1,f_2]}(u),
+\end{equation}
+其中 $[f_1,f_2]$ 应由噪声谱、NPS proxy、重建核和体素间距标定。若该频带包含显著血管、骨小梁或条纹结构，则必须收缩 $\Omega_{\mathrm{hom}}$ 或降低反馈权重。
+
+本框架要求 $P$ 的 proposal 在同质区域满足噪声能量下降：
+\begin{equation}
+\label{eq:hom-noise-suppression-coreC}
+    \Std_{\Omega_{\mathrm{hom}}}\big(\Pi_{\mathcal N}\tilde s_h^P\big)
+    \le
+    \gamma_{\mathrm{hom}}
+    \Std_{\Omega_{\mathrm{hom}}}\big(\Pi_{\mathcal N}x_h\big)+\epsilon_{\mathrm{hom}},
+    \qquad 0<\gamma_{\mathrm{hom}}<1.
+\end{equation}
+同时保持低频结构：
+\begin{equation}
+\label{eq:hom-lowfreq-anchor-coreC}
+    \norm{\Pi_{\mathrm{lo}}(\tilde s_h^P-x_h)}_{\Omega_{\mathrm{hom}}}
+    \le \epsilon_{\mathrm{lo},P}.
+\end{equation}
+式~\eqref{eq:hom-noise-suppression-coreC} 是 本框架与 常规双反馈设计 的核心差异。它提供了第一个把 target 从 REG 推开的独立动力源，而不是等待 $D_{\bar\theta}$ 先变得更干净。
+
+\subsection{结构子空间 agreement 与噪声子空间创新}
+\label{subsec:coreC-structural-agreement}
+
+常规双反馈设计 的 D/P agreement 若直接作用在全图全频段上，会惩罚 $P$ 相对保守 $D$ 的有益创新。本框架将 agreement 改为结构子空间 agreement：
+\begin{equation}
+\label{eq:struct-agree-coreC}
+    \mathcal L_{\mathrm{agree}}^{\mathcal S}
+    =\E\norm{W_h^{\mathrm{safety}}\odot
+    \Pi_{\mathcal S}\left(\tilde s_h^P-D_{\bar\theta}(x_h,c_h)\right)}_1.
+\end{equation}
+该项只约束 $P$ 不在结构方向上偏离 EMA $D$，但不惩罚噪声子空间中的合理去噪差异：
+\begin{equation}
+\label{eq:noise-innovation-allowed-coreC}
+    \Pi_{\mathcal N}\left(\tilde s_h^P-D_{\bar\theta}(x_h,c_h)\right)
+    \neq 0
+    \quad\text{is allowed in }\Omega_{\mathrm{hom}}.
+\end{equation}
+这避免了闭环逻辑
+\begin{equation}
+    D_{\bar\theta}\approx x_h\Rightarrow P\approx x_h\Rightarrow t_h\approx x_h
+\end{equation}
+把系统锁死在 REG 附近。
+
+\subsection{safety-benefit 双因子反馈 mask}
+\label{subsec:coreC-safety-benefit-mask}
+
+常规双反馈设计 的 feedback mask 主要回答“这里是否安全”。本框架 额外要求回答“这里启用 feedback 是否带来实际去噪收益”。定义 safety mask：
+\begin{equation}
+\label{eq:safety-mask-coreC}
+    W_h^{\mathrm{safety}}
+    =W_{\mathrm{hom}}\odot W_{\mathrm{stable}}\odot W_{\mathrm{audit}}\odot(1-W_{\mathcal S})\odot(1-W_{\mathrm{edge}}),
+\end{equation}
+并定义 benefit score：
+\begin{equation}
+\label{eq:benefit-score-coreC}
+    b_h^{\mathrm{benefit}}
+    =\left[
+    \Std_{\mathcal N,\mathcal P(i)}(x_h)
+    -\Std_{\mathcal N,\mathcal P(i)}(\tilde s_h^P)
+    \right]_+,
+\end{equation}
+其中 $\Std_{\mathcal N,\mathcal P(i)}$ 表示以像素 $i$ 为中心的局部 patch 中噪声子空间能量。将其归一化得到
+\begin{equation}
+\label{eq:w-benefit-coreC}
+    W_h^{\mathrm{benefit}}
+    =\clip\left(
+    \frac{b_h^{\mathrm{benefit}}}{\widehat\sigma_{\mathrm{noise}}(x_h)+\epsilon},0,1
+    \right).
+\end{equation}
+最终反馈 mask 为
+\begin{equation}
+\label{eq:w-feedback-coreC}
+    W_h^{\mathrm{fb}}=W_h^{\mathrm{safety}}\odot W_h^{\mathrm{benefit}}.
+\end{equation}
+动态目标更新为
+\begin{equation}
+\label{eq:target-coreC}
+    t_h=x_h+W_h^{\mathrm{fb}}\odot \SG[\tilde s_h^P-x_h].
+\end{equation}
+若 $P\approx x_h$，则 $W_h^{\mathrm{benefit}}$ 会很小，feedback 不会伪装成有效目标更新；若 $P$ 在同质区域真正降低噪声，同时结构风险低，则 feedback 增强。
+
+\begin{remark}[对双反馈闭环的修正]
+ 本框架不是简单加强 $P\to D$，而是把 $P$ 的 proposal 改造成“低频锚定、结构不漂移、噪声子空间必须下降”的区域分层目标。这样，监督对象向更干净方向移动的动力来自同质区域噪声抑制约束，而不是完全依赖已经保守的 $D$ teacher。
+\end{remark}
+
+\subsection{跨体积残差候选池与结构泄漏显式建模}
+
+供体体积 $V_d$ 中的残差候选可以由多条保守路径产生，而不应依赖单一 EMA residual。记候选池为
+\begin{equation}
+\label{eq:zcand-auditA}
+    \cZ_{\mathrm{cand}}
+    =\cZ_{\mathrm{EMA}}
+    \cup\cZ_{\mathrm{LP}}
+    \cup\cZ_{\mathrm{BPF}}
+    \cup\cZ_{\mathrm{TTA}}
+    \cup\cZ_{\mathrm{syn}}.
+\end{equation}
+其中 $\cZ_{\mathrm{EMA}}$ 来自 EMA teacher residual，$\cZ_{\mathrm{LP}}$ 来自保守低通基线残差，$\cZ_{\mathrm{BPF}}$ 来自频带分解后的中高频残差，$\cZ_{\mathrm{TTA}}$ 来自 test-time augmentation 或 dropout disagreement 中的低结构相关随机分量，$\cZ_{\mathrm{syn}}$ 是经过局部噪声尺度标定的保守合成 fallback。候选来源越多，并不意味着残差假设越弱；真正进入训练的残差必须先通过统一审计。
+
+供体残差不被理想化为纯噪声。任意候选 patch 级残差写为
+\begin{equation}
+\label{eq:z-decomposition-auditA}
+    z_{d,p}=\xi_{d,p}+q_{d,p},
+\end{equation}
+其中 $\xi_{d,p}$ 是可标定噪声成分，$q_{d,p}$ 是供体结构泄漏成分。跨体积采样只能减少 $z_{d,p}$ 与受体 $x_h$ 共享同一解剖结构的风险，却不能推出 $q_{d,p}=0$。因此，本文不把“跨体积”视为充分条件，而把它视为残差审计之前的必要保护。
+
+
+\subsection{结构子空间 \texorpdfstring{$\Pi_{\mathcal S}$}{PiS} 的可实现定义}
+
+式~\eqref{eq:z-decomposition-auditA} 中的 $q_{d,p}$ 不是可直接观测的变量，因此 $\Pi_{\mathcal S}$ 不能被写成抽象的“结构投影”而不说明工程口径。本文将 $\Pi_{\mathcal S}$ 定义为一个多投影审计族，而不是单一线性算子：
+\begin{equation}
+\label{eq:pis-family-auditB}
+    \Pi_{\mathcal S}z
+    =\Big(
+    \lambda_{\mathrm{lo}}\Pi_{\mathrm{lo}}z,
+    \lambda_{\mathrm{edge}}\Pi_{\mathrm{edge}}(z;x),
+    \lambda_{\mathrm{mask}}\Pi_{\mathrm{mask}}(z;x),
+    \lambda_{\mathrm{morph}}\Pi_{\mathrm{morph}}(z),
+    \lambda_{\mathrm{dir}}\Pi_{\mathrm{dir}}z
+    \Big).
+\end{equation}
+对应的结构泄漏分数定义为
+\begin{equation}
+\label{eq:struct-score-auditB}
+    r_{\mathrm{struct}}(z;x)
+    =\frac{
+    \left(\sum_{j\in\mathfrak S}\lambda_j^2\norm{\Pi_j(z;x)}_2^2\right)^{1/2}}
+    {\norm{z}_2+\epsilon},
+\end{equation}
+其中 $\mathfrak S=\{\mathrm{lo},\mathrm{edge},\mathrm{mask},\mathrm{morph},\mathrm{dir}\}$。这些投影的含义如下。
+
+\paragraph{低频结构投影。}
+$\Pi_{\mathrm{lo}}$ 提取低频能量。若残差在低频区域有显著能量，则它更可能包含供体解剖主体、厚层部分容积趋势或 teacher 的低频偏差，而不是可注入的局部噪声。
+
+\paragraph{边缘对齐投影。}
+定义供体边缘权重
+\begin{equation}
+    E_x=\frac{|G_\sigma x|}{\operatorname{median}(|G_\sigma x|)+\epsilon},
+    \qquad
+    \Pi_{\mathrm{edge}}(z;x)=E_x\odot z.
+\end{equation}
+该项衡量 residual 是否集中在骨边缘、器官边界、血管边界或金属伪影边界附近。它与 $r_{\mathrm{edge}}$ 的区别是：$r_{\mathrm{edge}}$ 衡量梯度相关性，$\Pi_{\mathrm{edge}}$ 衡量 residual 能量是否落在结构边缘支撑上。
+
+\paragraph{解剖/材料 mask 投影。}
+若存在可靠的骨 mask、空气/软组织分层、血管候选 mask、金属伪影 mask 或形态学边界 mask，定义
+\begin{equation}
+    \Pi_{\mathrm{mask}}(z;x)=M_{\mathrm{anat}}(x)\odot z.
+\end{equation}
+在没有分割模型时，$M_{\mathrm{anat}}$ 可以由 HU window、局部梯度分位数、连通域边界和形态学膨胀得到。该 mask 只用于审计，不作为 clean 标签。
+
+\paragraph{形态学结构投影。}
+$\Pi_{\mathrm{morph}}$ 捕获细长、连通、方向一致的残差成分。例如血管样细线、骨小梁残留、裂纹状结构或金属条纹。工程上可用连通域长度/宽度比、Frangi-like tubeness、局部 Hessian 各向异性或 skeleton response 近似。该项不要求可微，因为它只作用于残差池审计。
+
+\paragraph{方向性伪影投影。}
+$\Pi_{\mathrm{dir}}$ 提取与 CT 重建核、轴向层厚、条纹或环形伪影相关的方向性频带。对于各向异性体素或厚层重建，方向性频带泄漏常常比普通低频泄漏更危险，因此应单独记录。
+
+最终，理论中的 $\norm{\Pi_{\mathcal S}q_d}$ 在工程上由式~\eqref{eq:struct-score-auditB} 的 accepted-pool 均值或高分位数近似。若某个数据集缺少 vessel/bone mask，则可以将 $\lambda_{\mathrm{mask}}$ 置零，但必须在实验设置中说明；不能把未实现的结构投影写入理论保证。
+
+\subsection{patch-level 残差审计}
+
+残差审计在 patch level 进行。对候选残差 $z_{d,p}$ 及其供体图像 patch $x_{d,p}$，定义审计指标：
+\begin{align}
+    r_{\mathrm{lf}}(z_{d,p})
+    &=\frac{\norm{\Pi_{\mathrm{lo}}z_{d,p}}_2}{\norm{z_{d,p}}_2+\epsilon},\\
+    r_{\mathrm{edge}}(z_{d,p},x_{d,p})
+    &=\operatorname{Corr}\big(|G_\sigma z_{d,p}|,|G_\sigma x_{d,p}|\big),\\
+    r_{\mathrm{struct}}(z_{d,p},x_{d,p})
+    &=\frac{\left(\sum_{j\in\mathfrak S}\lambda_j^2\norm{\Pi_j(z_{d,p};x_{d,p})}_2^2\right)^{1/2}}{\norm{z_{d,p}}_2+\epsilon},\\
+    \rho_{\mathrm{std}}(z_{d,p})
+    &=\frac{\operatorname{std}(z_{d,p})}{\widehat\sigma_{\mathrm{noise}}(x_{d,p})+\epsilon}.
+\end{align}
+其中 $\widehat\sigma_{\mathrm{noise}}$ 可由 homogeneous patch 的 MAD 或局部高频能量估计：
+\begin{equation}
+    \widehat\sigma_{\mathrm{noise}}(x)
+    =1.4826\cdot \MAD(\Pi_{\mathrm{hi}}x).
+\end{equation}
+相对尺度 $\rho_{\mathrm{std}}$ 替代固定绝对阈值，因为不同 HU window、归一化策略和剂量条件下，绝对 residual std 不具有可比性。
+
+\subsection{Calibration proxy 与替代噪声分布 \texorpdfstring{$\widehat{\mathcal Q}_{\mathrm{noise}}$}{Q-noise proxy}}
+
+理论式中出现的 $\mathcal Q_{\mathrm{noise}}$ 表示目标数据条件下的真实噪声分布。然而在多数临床 CT 或无监督 tomography 场景中，不存在同一切片的重复扫描、真实 clean 图像或精确噪声采样。因此工程实现中必须把
+\begin{equation}
+    \SWD(\mathcal L(A_hz_{d,p}),\mathcal Q_{\mathrm{noise}})\le\tau_{\mathrm{cal}}
+\end{equation}
+替换为可报告的 proxy 校准条件。本文采用条件化替代噪声族
+\begin{equation}
+\label{eq:qnoise-proxy-family-auditB}
+    \widehat{\mathcal Q}_{\mathrm{noise}}^{(b)}
+    =\left\{
+    \widehat Q_{\mathrm{MAD}}^{(b)},
+    \widehat Q_{\mathrm{TTA}}^{(b)},
+    \widehat Q_{\mathrm{cons}}^{(b)},
+    \widehat Q_{\mathrm{PG}}^{(b)},
+    \widehat Q_{\mathrm{pair}}^{(b)}\ \text{if available}
+    \right\},
+\end{equation}
+其中 $b$ 是条件 bin，例如剂量水平、重建核、HU window、$B_h$ 分位数、patch 纹理类型和体素间距。所有 calibration proxy 都必须在相同 bin 内比较，避免把骨窗噪声、软组织窗噪声和不同重建核的频谱混在一起。
+
+\paragraph{MAD/NPS 合成 proxy。}
+在 homogeneous receiver patch 中估计局部高频噪声尺度
+\begin{equation}
+    \widehat\sigma_{\mathrm{MAD}}(x)=1.4826\cdot\MAD(\Pi_{\mathrm{hi}}x),
+\end{equation}
+并生成与该尺度匹配的高频 Gaussian 或 noise-power-spectrum shaped synthetic noise，得到 $\widehat Q_{\mathrm{MAD}}^{(b)}$。该 proxy 保守、可控，但可能低估非高斯 streak、ring 或 photon starvation 噪声。
+
+\paragraph{TTA / dropout disagreement proxy。}
+对同一 receiver patch 做多次 test-time augmentation 或 dropout teacher 推理，取去均值后的 disagreement 分量，并剔除边缘相关和低频结构成分，得到 $\widehat Q_{\mathrm{TTA}}^{(b)}$。该 proxy 反映模型不确定性中的随机成分，但不能把系统性结构误差直接当作噪声。
+
+\paragraph{Conservative denoiser residual proxy。}
+在 homogeneous、low-edge、low-structure patch 上，用保守 denoiser 或低通基线产生 residual，并经过 $\Pi_{\mathrm{lo}}$、$\Pi_{\mathcal S}$ 和 edge-safe 审计后形成 $\widehat Q_{\mathrm{cons}}^{(b)}$。该 proxy 只用于校准频谱与尺度，不自动获得进入训练残差池的资格。
+
+\paragraph{Poisson-Gaussian 物理 proxy。}
+若可估计 dose、log-transform 或 scanner-specific noise curve，可使用
+\begin{equation}
+    \zeta_{\mathrm{PG}}=\sqrt{a\cdot I+b}\,\epsilon,
+    \qquad \epsilon\sim\mathcal N(0,1),
+\end{equation}
+构造 $\widehat Q_{\mathrm{PG}}^{(b)}$。该 proxy 主要提供尺度与强度依赖约束，不应替代结构泄漏审计。
+
+\paragraph{配对参考 proxy。}
+若存在配准可靠的 HR--REG、重复扫描、低剂量--常规剂量，\allowbreak 或模拟 clean/noisy 对，可以构造
+\begin{equation}
+    \widehat n_{\mathrm{pair}}=\Pi_{\mathrm{hi}}(x_{\mathrm{noisy}}-x_{\mathrm{ref}})
+\end{equation}
+作为 $\widehat Q_{\mathrm{pair}}^{(b)}$。该 proxy 的前提是配准误差、剂量差异和重建核差异已经单独报告。若 HR 与 REG 存在尺度、chunk 或几何不一致，则不能把二者差分直接视为真实噪声。
+
+给定 proxy family，定义校准误差为双条件口径：
+\begin{equation}
+\label{eq:cal-proxy-error-auditB}
+\begin{aligned}
+    \epsilon_{\mathrm{cal}}(z_{d,p};b)
+    ={}&\min_{\widehat Q\in\widehat{\mathcal Q}_{\mathrm{noise}}^{(b)}}
+    \SWD\big(\mathcal L(A_{h,p}z_{d,p}),\widehat Q\big)\nonumber\\
+    &+\lambda_{\mathrm{nps}}\,d_{\mathrm{NPS}}(A_{h,p}z_{d,p},\widehat{\mathcal Q}_{\mathrm{noise}}^{(b)})
+    +\lambda_{\mathrm{scale}}\,\abs{\rho_{\mathrm{std}}(z_{d,p})-1}.
+\end{aligned}
+\end{equation}
+其中 $d_{\mathrm{NPS}}$ 比较径向或方向性噪声功率谱。为了避免某一个 proxy 过于宽松，accepted residual 还应满足 guard 条件：至少一个 proxy 通过主阈值，且所有可用 proxy 的 SWD 不得超过宽松上界 $\tau_{\mathrm{guard}}$。因此校准审计写为
+\begin{equation}
+\label{eq:cal-guard-auditB}
+    \epsilon_{\mathrm{cal}}(z_{d,p};b)\le\tau_{\mathrm{cal}},
+    \qquad
+    \max_{\widehat Q\in\widehat{\mathcal Q}_{\mathrm{noise}}^{(b)}}
+    \SWD(\mathcal L(A_{h,p}z_{d,p}),\widehat Q)
+    \le\tau_{\mathrm{guard}}.
+\end{equation}
+如果没有任何可用 proxy，不能声称 residual calibration 已闭环；此时必须设置 $\rho_t=0$ 或只使用 $\zeta_{\mathrm{safe}}$。
+
+定义审计函数
+\begin{equation}
+\label{eq:audit-func-auditA}
+\begin{aligned}
+    \Audit(z_{d,p};x_{d,p})=1
+    \quad\Longleftrightarrow\quad
+    &r_{\mathrm{lf}}(z_{d,p})\le\tau_{\mathrm{lf}},\\
+    &r_{\mathrm{edge}}(z_{d,p},x_{d,p})\le\tau_{\mathrm{edge}},\\
+    &r_{\mathrm{struct}}(z_{d,p},x_{d,p})\le\tau_{\mathrm{struct}},\\
+    &\rho_{\min}\le\rho_{\mathrm{std}}(z_{d,p})\le\rho_{\max},\\
+    &\epsilon_{\mathrm{cal}}(z_{d,p};b)\le\tau_{\mathrm{cal}},\\
+    &\max_{\widehat Q\in\widehat{\mathcal Q}_{\mathrm{noise}}^{(b)}}\SWD(\mathcal L(A_{h,p}z_{d,p}),\widehat Q)\le\tau_{\mathrm{guard}}.
+\end{aligned}
+\end{equation}
+通过审计的残差池为
+\begin{equation}
+\label{eq:zaudit-auditA}
+    \cZ_{\mathrm{audit}}
+    =\{z_{d,p}\in\cZ_{\mathrm{cand}}:\Audit(z_{d,p};x_{d,p})=1\}.
+\end{equation}
+该定义允许出现 $\cZ_{\mathrm{audit}}=\varnothing$。这不是实现异常，而是理论框架中的显式状态：当残差池为空时，残差增强路径必须关闭。
+
+\subsection{edge-safe 与 band-pass 残差构造约束}
+
+为了降低供体边缘结构进入残差池的概率，候选残差在审计前可以经过 edge-safe mask 和频带过滤。令
+\begin{equation}
+    M_{\mathrm{safe}}(x_{d,p})
+    =\one\{|G_\sigma x_{d,p}|\le Q_q(|G_\sigma x_{d,p}|)\},
+\end{equation}
+其中 $Q_q$ 是供体 patch 梯度强度的 $q$ 分位数。定义
+\begin{equation}
+    \tilde z_{d,p}=M_{\mathrm{safe}}(x_{d,p})\odot \BPF(z_{d,p}).
+\end{equation}
+该操作不会证明 $\tilde z_{d,p}$ 必然是噪声，但可以降低低频结构和强边缘结构通过审计的概率。只有当 $\tilde z_{d,p}$ 继续满足式~\eqref{eq:audit-func-auditA} 时，它才被加入 $\cZ_{\mathrm{audit}}$。
+
+
+\subsection{全局审计误差的双轨统计口径与受审计残差控制器}
+
+全局审计不能只报告一个平均误差。本文采用 accepted/error 双轨统计：
+\begin{align}
+    N_{\mathrm{cand}}^{(t)}&=|\cZ_{\mathrm{cand}}^{(t)}|,\qquad
+    N_{\mathrm{acc}}^{(t)}=|\cZ_{\mathrm{audit}}^{(t)}|,\\
+    \pi_{\mathrm{pass}}^{(t)}&=\frac{N_{\mathrm{acc}}^{(t)}}{N_{\mathrm{cand}}^{(t)}+\epsilon}.
+\end{align}
+$\pi_{\mathrm{pass}}$ 的分母是所有候选 residual patch，而不是所有 donor volume。它衡量候选生成器是否健康，但不直接说明 accepted pool 的质量。
+
+对 accepted pool 定义质量误差
+\begin{equation}
+\label{eq:eacc-auditB}
+\begin{aligned}
+    \mathcal E_{\mathrm{acc}}^{(t)}
+    ={}&w_{\mathrm{lf}}\,Q_{q_a}\big(r_{\mathrm{lf}}(z):z\in\cZ_{\mathrm{audit}}^{(t)}\big)
+    +w_{\mathrm{edge}}\,Q_{q_a}\big(r_{\mathrm{edge}}(z,x):z\in\cZ_{\mathrm{audit}}^{(t)}\big)\\
+    &+w_{\mathrm{struct}}\,Q_{q_a}\big(r_{\mathrm{struct}}(z,x):z\in\cZ_{\mathrm{audit}}^{(t)}\big)
+    +w_{\mathrm{std}}\,Q_{q_a}\big(|\rho_{\mathrm{std}}(z)-1|:z\in\cZ_{\mathrm{audit}}^{(t)}\big)\\
+    &+w_{\mathrm{cal}}\,Q_{q_a}\big(\epsilon_{\mathrm{cal}}(z;b):z\in\cZ_{\mathrm{audit}}^{(t)}\big),
+\end{aligned}
+\end{equation}
+其中 $Q_{q_a}$ 可取 $0.90$ 或 $0.95$ 分位数，而不是均值。使用高分位数可以防止少量结构污染 patch 被均值掩盖。
+
+对 rejected candidates 定义诊断误差
+\begin{equation}
+\label{eq:erej-auditB}
+    \mathcal E_{\mathrm{rej}}^{(t)}
+    =\mathrm{Diag}\Big(\{r_{\mathrm{lf}},r_{\mathrm{edge}},r_{\mathrm{struct}},\rho_{\mathrm{std}},\epsilon_{\mathrm{cal}}\}:z\in\cZ_{\mathrm{cand}}^{(t)}\setminus\cZ_{\mathrm{audit}}^{(t)}\Big).
+\end{equation}
+$\mathcal E_{\mathrm{rej}}$ 只用于诊断候选生成路径，不用于锁死已经合格的 accepted pool。换言之，只要 $\cZ_{\mathrm{audit}}$ 的容量、freshness 和 $\mathcal E_{\mathrm{acc}}$ 满足要求，rejected candidates 的数量较多并不自动使 $\rho_t$ 置零。只有当 accepted pool 过期、容量不足、质量高分位数越界或连续刷新均无法产生新 accepted residual 时，系统才回退到 safe state。
+
+定义 accepted pool 的 freshness 条件
+\begin{equation}
+    \Delta t_{\mathrm{audit}}^{(t)}\le T_{\mathrm{ttl}},
+\end{equation}
+其中 $T_{\mathrm{ttl}}$ 是审计结果的有效窗口。该条件防止模型和预处理状态发生漂移后继续使用旧残差池。
+
+残差控制器不应只给出硬开关，而应包含硬资格条件和连续强度调度。首先定义硬资格变量
+\begin{equation}
+\label{eq:hard-eligibility-auditC}
+    H_t
+    =\one\left\{
+    N_{\mathrm{acc}}^{(t)}\ge N_{\min},\quad
+    \pi_{\mathrm{pass}}^{(t)}\ge\pi_{\min},\quad
+    \mathcal E_{\mathrm{acc}}^{(t)}\le\tau_{\mathrm{acc}},\quad
+    \Delta t_{\mathrm{audit}}^{(t)}\le T_{\mathrm{ttl}}
+    \right\}.
+\end{equation}
+$H_t=0$ 表示残差路径没有资格启用；$H_t=1$ 只表示残差池具备候选资格，并不意味着应立即以最大强度注入。进一步定义训练--推理偏移估计
+\begin{equation}
+\label{eq:shift-score-auditC}
+    S_t
+    =\frac{\E\norm{\alpha_t A_hZ_h}_2}{\E\widehat\sigma_{\mathrm{noise}}(x_h)+\epsilon},
+\end{equation}
+其中 $Z_h$ 是 patch-canvas residual，$\widehat\sigma_{\mathrm{noise}}$ 由 homogeneous patch 的 MAD/NPS proxy 估计。残差强度控制器定义为
+\begin{equation}
+\label{eq:rho-controller-auditA}
+    \rho_t
+    = H_t\cdot
+    \min\left\{1,
+    r_{\mathrm{ramp}}(t),
+    \frac{\kappa_{\mathrm{shift}}}{S_t+\epsilon},
+    \frac{\tau_{\mathrm{acc}}}{\mathcal E_{\mathrm{acc}}^{(t)}+\epsilon}
+    \right\},
+    \qquad 0\le \rho_t\le1 .
+\end{equation}
+其中 $r_{\mathrm{ramp}}(t)$ 是从 $0$ 缓慢增至 $1$ 的 warmup 曲线，$\kappa_{\mathrm{shift}}$ 是允许的训练--推理偏移上界。这样，$\rho_t=0$ 表示 safe masked training，$0<\rho_t<1$ 表示 soft residual warmup，$\rho_t=1$ 表示 residual-gated enhancement 完全启用。$\rho_t$ 是训练图中的状态变量，不是可由 $\cL_D$ 反传学习的网络输出。若长训过程中 accepted-pool 高分位数越界、pool 过期、donor/receiver 隔离失效，或式~\eqref{eq:shift-score-auditC} 的偏移过大，则 $H_t=0$ 或 $\rho_t$ 被压低，训练回退到安全主干或软启用状态。
+
+\begin{remark}[为什么需要 soft controller]
+若残差池刚达到最低容量就令 $\rho_t$ 从 $0$ 跳到 $1$，模型会突然面对与推理输入差异很大的 $y_h$，从而优先学习“去掉注入扰动并还原 REG target”，而不是学习去除原生 CT 噪声。soft controller 把 accepted-pool 质量、注入幅度和 train--infer shift 写进同一状态变量，避免低通过率或高偏移条件下的过早放行。
+\end{remark}
+
+\subsection{受审计残差门控的中心层 noisier 输入与 masked 训练输入}
+
+训练输入统一定义为
+\begin{equation}
+\label{eq:yc-gated-auditA}
+    y_h=x_h+\rho_t\alpha_tA_hz_d+(1-\rho_t)\beta_t\zeta_{\mathrm{safe}},
+\end{equation}
+其中 $z_d\in\cZ_{\mathrm{audit}}$ 只在 $\rho_t=1$ 时被采样；$\zeta_{\mathrm{safe}}$ 是保守安全扰动，可以取为零、局部 MAD 标定的高频 Gaussian perturbation，或低强度 Poisson-Gaussian proxy；$\alpha_t$ 是审计残差注入强度，$\beta_t$ 是安全扰动强度。
+
+式~\eqref{eq:yc-gated-auditA} 把训练系统拆成三个连续状态：
+\begin{align}
+    \rho_t=0&:\quad y_h=x_h+\beta_t\zeta_{\mathrm{safe}},\\
+    0<\rho_t<1&:\quad y_h=x_h+\rho_t\alpha_tA_hz_d+(1-\rho_t)\beta_t\zeta_{\mathrm{safe}},\\
+    \rho_t=1&:\quad y_h=x_h+\alpha_tA_hz_d.
+\end{align}
+若进一步令 $\beta_t=0$，则 safe 状态退化为纯中心层 masked conditional denoising。该退化不是失败状态，而是理论允许的保守训练路径；但它也不能被解释为已经具备 HR 级强去噪能力。safe 状态的主要作用是建立非恒等的 masked conditional backbone、稳定 EMA teacher、为残差审计提供更可靠的候选，而不是单独完成最终强去噪。
+
+为了进一步减少 identity shortcut，本文使用 block-masked 形式：
+\begin{equation}
+\label{eq:masked-y-gated-auditA}
+    y_h^M=(1-M_h)\odot x_h
+    +M_h\odot\left(K_{\mathrm{low}}*x_h+\rho_t\alpha_tA_hz_d+(1-\rho_t)\beta_t\zeta_{\mathrm{safe}}\right).
+\end{equation}
+训练损失只在 mask 区域上计算。直观上，模型不能直接看到 mask 区域的原始中心像素，只能根据可见邻域、低通上下文、低通中心主体和受审计扰动学习条件期望。这使理论更接近 Noise2Self / blind-spot 可识别性，而不是依赖“外生残差一定可用”的强假设。
+
+
+\subsection{safe preheat 阶段的噪声来源与非恒等约束}
+
+当 $\rho_t=0$ 时，系统不使用跨体积 donor residual。此时训练信号来自两部分：第一，中心层本身的原生观测噪声 $x_h=s_h+n_h$；第二，可选的弱安全扰动 $\beta_t\zeta_{\mathrm{safe}}$。因此，safe preheat 不是 residual-gated denoising，也不应被描述为完整 TRACE-CT 强去噪阶段。它的有效性依赖于 block-masked / blind-spot 条件预测：目标区域的原始像素必须从输入中被移除，loss 也必须主要限制在 masked 区域。
+
+若 $\beta_t=0$，则 safe preheat 的输入主体近似为 $x_h$，此时防止恒等映射的唯一机制是 mask。若 mask replacement 泄漏原始像素、mask block 太小、或 loss 在 full slice 上计算，则目标会退化为
+\begin{equation}
+    D_\theta(x_h,c_h)\approx x_h,
+\end{equation}
+从而得到视觉上非常保守的 under-denoising。为避免该问题，本文要求 safe preheat 满足
+\begin{equation}
+\label{eq:nonidentity-mask-auditC}
+    \mathrm{Leak}(M_h,\mathcal B)\le \tau_{\mathrm{leak}},
+    \qquad
+    \frac{|M_h|}{|\Omega_{\mathrm{anatomy}}|}\ge m_{\min},
+\end{equation}
+其中 $\mathrm{Leak}(M_h,\mathcal B)$ 衡量 masked replacement $\mathcal B(x_h)$ 对原始中心像素的可见泄漏。工程上可以通过可视化 $M_h$、比较 $y_h^M$ 与 $x_h$ 的差异、以及检查 masked-only loss 口径来验证式~\eqref{eq:nonidentity-mask-auditC}。
+
+弱安全扰动 $\zeta_{\mathrm{safe}}$ 的角色是 warmup perturbation，而不是通过审计的 donor residual。它可由 homogeneous patch 的 MAD/NPS proxy、低强度 Poisson-Gaussian proxy 或 TTA disagreement proxy 构造，并应满足
+\begin{equation}
+\label{eq:safe-perturb-scale-auditC}
+    0\le \beta_t\le \beta_{\max},
+    \qquad
+    \frac{\E\norm{\beta_t\zeta_{\mathrm{safe}}}_2}{\E\widehat\sigma_{\mathrm{noise}}(x_h)+\epsilon}\le \kappa_{\mathrm{safe}}.
+\end{equation}
+过强的 $\beta_t$ 会破坏训练--推理一致性；过弱的 $\beta_t$ 则可能使 preheat 接近恒等重建。因此 $\beta_t$ 应从 $0$ 或极小值开始，随 masked loss 稳定后缓慢增加，并始终低于 residual-gated 阶段的有效扰动强度。
+
+\begin{remark}[safe preheat 的预期效果]
+safe preheat 的预期效果是学到安全但有限的中心层去噪先验，稳定 EMA teacher，并让 $P_\phi$ 的 envelope / reliability 表征不被早期污染残差干扰。若训练全程停留在 $\rho_t=0$，最终结果偏保守是预期行为，而不是理论反常。强去噪能力应来自后续 soft residual warmup、audited residual enhancement 以及独立去噪强度控制，而不能只依赖 safe preheat。
+\end{remark}
+
+\subsection{receiver patch-level injection 的精确定义}
+
+为避免“audited residual patch 放到 full-slice canvas”与理论 patch 采样不一致，本文将 injection 写成显式 patch-canvas 算子。令 receiver slice 属于体积 $V_r$，在该 slice 上采样 receiver patch 支撑 $P_{r,k}\subset\Omega$，并令 $M_{h,k}=\one_{P_{r,k}}$ 或其内部 block-mask 子集。对每个 receiver patch，从 donor volume $V_d\ne V_r$ 的 accepted pool 中采样 residual patch $z_{d,p_k}\in\cZ_{\mathrm{audit}}(V_d)$。
+
+定义放置算子 $\mathcal I_{P_{r,k}}$ 将 donor residual patch 放到 receiver slice canvas 的 $P_{r,k}$ 位置，patch 外为零：
+\begin{equation}
+    Z_{h,k}=\mathcal I_{P_{r,k}}(T_k z_{d,p_k}),
+    \qquad
+    \supp(Z_{h,k})\subseteq P_{r,k}.
+\end{equation}
+若一个 mini-batch 中有多个 receiver patches，则
+\begin{equation}
+\label{eq:canvas-residual-auditB}
+    Z_h=\sum_{k=1}^{K_p} \omega_k Z_{h,k},
+\end{equation}
+其中重叠区域可通过 $\omega_k$ 平均或直接禁止 patch 重叠。此时式~\eqref{eq:masked-y-gated-auditA} 更精确地写为
+\begin{equation}
+\label{eq:masked-y-canvas-auditB}
+    y_h^M=(1-M_h)\odot x_h
+    +M_h\odot\left(K_{\mathrm{low}}*x_h+\rho_t\alpha_tA_hZ_h+(1-\rho_t)\beta_t\zeta_{\mathrm{safe}}\right),
+\end{equation}
+其中
+\begin{equation}
+    M_h=\one_{\cup_k P_{r,k}}
+    \quad\text{或}\quad
+    M_h\subseteq \one_{\cup_k P_{r,k}}.
+\end{equation}
+也就是说，残差注入支撑必须被 mask 覆盖；loss 的主要监督区域为 $M_h$，patch 之外不计算主要重建损失。若实现上为了张量方便使用 full-slice canvas，则该 canvas 必须在非 receiver patch 区域为零，并且主要损失 mask 仍限制在 receiver patches 上。
+
+$T_k$ 是可选的残差变换。默认只允许随机平移式放置，即 donor patch 的内容被放到 receiver patch 位置，不额外旋转。只有在体素 spacing 近似各向同性、重建核不引入方向性噪声、并且变换后重新通过 audit 或 audit 指标对该变换不敏感时，才允许水平/垂直翻转或 $90^\circ$ 旋转。对于厚层 CT 或方向性条纹明显的数据，默认不使用旋转，以免改变噪声功率谱。
+
+receiver patch 采样也应避开不可解释区域。若 $\Omega_{\mathrm{sus}}$ 是小病灶保护区域，$\Omega_{\mathrm{edge}}$ 是强边缘区域，则 residual injection patch 可采用两类策略：一类是在 homogeneous 区域进行噪声标定训练；另一类是在疑似结构附近只使用 $\rho_t=0$ 或极弱 $\beta_t\zeta_{\mathrm{safe}}$，避免受审计 residual 对微小病灶监督产生额外偏差。两类策略必须在实验中作为 ablation 区分。
+
+\begin{remark}[残差池为空时的训练语义]
+当 $|\cZ_{\mathrm{audit}}|<N_{\min}$ 时，不允许通过放宽阈值强行启用残差路径。此时应设置 $\rho_t=0$，继续训练安全主干，并周期性刷新候选残差与审计统计。论文中相应的理论声明也必须降级为 safe backbone guarantee，而不能调用 residual enhancement theorem。
+\end{remark}
+\subsection{中心层条件残差去噪器与去噪强度控制}
+
+去噪器采用中心层残差结构，但上下文可靠性门控和去噪强度必须解耦。令
+\begin{equation}
+    g_h^{\mathrm{ctx}}\in[0,1]^m,
+    \qquad
+    \lambda_h^{\mathrm{den}}\in[0,1]^m,
+\end{equation}
+其中 $g_h^{\mathrm{ctx}}$ 只控制邻层低通上下文分支的使用，$\lambda_h^{\mathrm{den}}$ 控制中心层残差校正幅度。去噪器定义为
+\begin{equation}
+\label{eq:denoiser-residual-coreA}
+    D_\theta(y,c)=y-
+    \lambda_h^{\mathrm{den}}\odot
+    \eta_D\left[R_0(y)+g_h^{\mathrm{ctx}}\odot R_c(y,c)\right],
+    \qquad
+    0<\eta_D\le\eta_{\max}.
+\end{equation}
+$\lambda_h^{\mathrm{den}}$ 由 denoising-strength controller $S_\omega$ 产生：
+\begin{equation}
+\label{eq:strength-controller-auditC}
+    \lambda_h^{\mathrm{den}}
+    =S_\omega\left(x_h,c_h,A_h,g_h^{\mathrm{ctx}},\widehat\sigma_{\mathrm{noise}}(x_h),u_h^{\mathrm{align}}\right).
+\end{equation}
+该控制器应在 homogeneous anatomical region 中允许较强去噪，在强边缘、疑似微小结构、配准不可靠区域中降低校正幅度。关键点是：$g_h^{\mathrm{ctx}}\approx0$ 只表示不信任邻层上下文，并不意味着 $\lambda_h^{\mathrm{den}}\approx0$。否则，模型会把“上下文不可靠”误解为“不做中心层去噪”，从而产生保守输出。
+
+推理阶段输入真实 noisy 中心层：
+\begin{equation}
+\label{eq:inference-coreA}
+    \hat s_h=D_\theta(x_h,c_h).
+\end{equation}
+因此训练--推理偏移由
+\begin{equation}
+\label{eq:train-infer-shift-coreA}
+    W_1\big(\mathcal L(y_h,c_h),\mathcal L(x_h,c_h)\big)
+    \quad\text{或 masked 条件分布差异}
+\end{equation}
+控制。由于训练与推理共享中心层主体，该偏移不包含额外的主体生成误差。
+
+为避免残差头塌缩为零，训练和验证中应监控输出校正量
+\begin{equation}
+\label{eq:output-residual-auditC}
+    r_{\mathrm{out}}(x_h)=x_h-D_\theta(x_h,c_h),
+    \qquad
+    \rho_{\mathrm{den}}=\frac{\Std(r_{\mathrm{out}};\Omega_{\mathrm{hom}})}{\widehat\sigma_{\mathrm{noise}}(x_h;\Omega_{\mathrm{hom}})+\epsilon}.
+\end{equation}
+若 $\rho_{\mathrm{den}}\ll1$ 且视觉上 $D_\theta(x_h,c_h)\approx x_h$，则模型处于 under-denoising / conservative identity 区域。此时不应简单延长训练，而应检查 mask 口径、$\beta_t$、$\rho_t$、$\alpha_t$、$g_h^{\mathrm{ctx}}$ 和 $\lambda_h^{\mathrm{den}}$。
+
+
+
+
+\subsection{反保守恒等退化的去噪强度放行协议}
+\label{subsec:denoising-strength-release}
+
+仅依靠结构保护、低频锚定和 fixed noisy target 会使 $D_\theta$ 过度保守。最危险的退化是
+\begin{equation}
+    \hat s_h=x_h+\delta_h,
+    \qquad
+    \|\delta_h\|\ll \|\Pi_{\mathcal N}x_h\|,
+\end{equation}
+即输出只是原始中心层的微调。该退化在视觉上表现为噪声颗粒仍然存在，PSNR/SSIM 或 masked loss 可能略有改善，但 homogeneous ROI、NPS 幅度和输出残差能量均显示去噪不足。
+
+为此，TRACE-CT 引入 Denoising Strength Controller。令
+\begin{equation}
+    \hat n_h=N_\theta(x_h,c_h,p_h),
+    \qquad
+    \hat s_h=x_h-G_h^{\mathrm{den}}\odot \hat n_h,
+\end{equation}
+其中 $G_h^{\mathrm{den}}$ 与 $g_h^{\mathrm{ctx}}$ 解耦。$g_h^{\mathrm{ctx}}$ 只表示邻层上下文是否可信，而 $G_h^{\mathrm{den}}$ 表示中心层去噪强度。上下文不可靠不应自动推出去噪强度为零，否则模型会在难例上退化为 identity。
+
+\paragraph{去噪比例。}
+在 homogeneous ROI 中定义
+\begin{equation}
+    r_D^{\mathrm{hom}}
+    =\frac{\Std_{\Omega_{\mathrm{hom}}}(\Pi_{\mathcal N}\hat s_h)}
+    {\Std_{\Omega_{\mathrm{hom}}}(\Pi_{\mathcal N}x_h)+\epsilon}.
+\end{equation}
+若 $r_D^{\mathrm{hom}}>0.90$，说明 D 基本没有去噪；若 $r_D^{\mathrm{hom}}<0.60$，则可能存在过平滑。默认目标区间为
+\begin{equation}
+    0.65\le r_D^{\mathrm{hom}}\le 0.85.
+\end{equation}
+该区间可根据 dose、kernel、slice thickness 和任务敏感性在 validation-only 数据上校准。
+
+\paragraph{输出残差能量。}
+令
+\begin{equation}
+    \Delta_h=x_h-\hat s_h.
+\end{equation}
+如果 D 真正在去噪，$\Delta_h$ 应该主要落在噪声频带，而不是接近零。定义
+\begin{equation}
+    e_D=
+    \frac{\|\Pi_{\mathcal N}(x_h-\hat s_h)\|_2}
+    {\|\Pi_{\mathcal N}x_h\|_2+\epsilon}.
+\end{equation}
+默认要求
+\begin{equation}
+    0.10\le e_D\le 0.35.
+\end{equation}
+若 $e_D<0.05$，判定为 under-denoising；若 $e_D$ 过大，必须检查结构误删。
+
+\paragraph{输出残差噪声性。}
+移除的残差应像噪声，而不是像结构。定义
+\begin{equation}
+    \eta_{\mathrm{res-edge}}
+    =\left|\mathrm{Corr}\left(\nabla(x_h-\hat s_h),\nabla x_h\right)\right|.
+\end{equation}
+默认要求
+\begin{equation}
+    \eta_{\mathrm{res-edge}}\le 0.05\sim0.10.
+\end{equation}
+若该值过高，说明模型正在删除边缘或结构，必须降低 $G_h^{\mathrm{den}}$ 或增强结构风险 mask。
+
+\paragraph{NPS 幅度下降与形状保持。}
+只看 std reduction 容易把过平滑误判为成功。应同时报告
+\begin{equation}
+    A_{\mathrm{NPS}}
+    =\frac{\int_{\omega\in\Omega_N}\NPS_{\hat s}(\omega)d\omega}
+    {\int_{\omega\in\Omega_N}\NPS_x(\omega)d\omega+\epsilon},
+\end{equation}
+以及归一化谱形状差异
+\begin{equation}
+    d_{\mathrm{shape}}
+    =\left\|
+    \frac{\NPS_{\hat s}}{\int \NPS_{\hat s}}
+    -
+    \frac{\NPS_x}{\int \NPS_x}
+    \right\|_1.
+\end{equation}
+推荐目标为
+\begin{equation}
+    A_{\mathrm{NPS}}\in[0.50,0.85],
+    \qquad
+    d_{\mathrm{shape}}\le0.15.
+\end{equation}
+这表示 D 应该降低噪声幅度，但不应完全改变 CT 噪声纹理。
+
+\paragraph{强度区间损失。}
+为避免只保结构不去噪，引入低风险区域的强度区间损失：
+\begin{equation}
+    \mathcal L_{\mathrm{strength}}
+    =\left[r_D^{\mathrm{hom}}-\tau_{\max}\right]_+^2
+    +\left[\tau_{\min}-r_D^{\mathrm{hom}}\right]_+^2.
+\end{equation}
+若只想先防止欠去噪，可使用单边形式
+\begin{equation}
+    \mathcal L_{\mathrm{under}}
+    =\left[r_D^{\mathrm{hom}}-\tau_{\mathrm{under}}\right]_+^2,
+    \qquad \tau_{\mathrm{under}}=0.90.
+\end{equation}
+该损失只应在 $W^{\mathrm{hom}}$ 或 low-risk mask 内启用，并必须与 lesion retention、edge retention 和 NPS shape preservation 同时报告。
+
+\paragraph{主动 homogeneous 去噪训练场。}
+同质区域不是只用于评估，也应成为 D 的主动去噪训练场：
+\begin{equation}
+    \mathcal L_{\mathrm{hom-den}}
+    =\left\|W^{\mathrm{hom}}\odot \Pi_{\mathcal N}(\hat s_h)\right\|_1
+    +\lambda_{\mathrm{anchor}}
+    \left\|W^{\mathrm{hom}}\odot \Pi_{\mathrm{lo}}(\hat s_h-x_h)\right\|_1.
+\end{equation}
+第一项提供去噪压力，第二项防止低频 HU 漂移。若该项导致 synthetic lesion contrast 降低，则必须缩小 $W^{\mathrm{hom}}$ 或提高结构风险 mask 灵敏度。
+
+\paragraph{G4.5 放行规则。}
+在进入 proposal qualification 和 dynamic target 之前，必须执行 G4.5。放行条件为
+\begin{equation}
+\mathsf{Release}_{D}
+=\one\left\{
+ r_D^{\mathrm{hom}}\in[\tau_{\min},\tau_{\max}],\
+ e_D\ge\tau_e,\
+ \eta_{\mathrm{res-edge}}\le\tau_r,\
+ c_{\mathrm{lesion}}\ge\tau_l
+\right\}.
+\end{equation}
+默认取 $\tau_{\min}=0.65$、$\tau_{\max}=0.85$、$\tau_e=0.10$、$\tau_r=0.10$、$\tau_l=0.90$。若 $\mathsf{Release}_{D}=0$，系统不允许进入 G5/G6/G7，而应回到 mask、residual strength、$G_h^{\mathrm{den}}$ 下界、homogeneous loss 和 structure anchor 的调参。
+
+
+\subsection{粗到细延迟双反馈目标更新}
+\label{subsec:dual-feedback-target-coreB}
+
+固定 REG 目标方案中的主监督对象固定为 REG 中心层 $x_h$。这保证了没有 HR 标签时的自监督闭环，但也带来一个上限：当 $D_\theta(x_h,c_h)$ 已经比 $x_h$ 更平滑、更接近潜在 clean 结构时，损失仍然把输出拉向 $x_h$。本框架将监督对象从固定 noisy target 升级为置信加权动态目标：
+\begin{equation}
+\label{eq:dynamic-target-coreB}
+    t_h^{(k)}=(1-W_h^{(k)})\odot x_h+W_h^{(k)}\odot \SG[\tilde s_{h}^{P,k}],
+\end{equation}
+其中
+\begin{equation}
+\label{eq:pema-target-coreB}
+    \tilde s_{h}^{P,k}=P_{\bar\phi_k}^{\mathrm{target}}(x_h,c_h,\mathcal I_h^P)
+\end{equation}
+由 EMA target estimator 给出，并且在更新 $D_\theta$ 时停止梯度。
+
+式~\eqref{eq:dynamic-target-coreB} 是 本框架的第二个反馈方向：\textbf{$P$ 的稳定输出构造为 $D$ 的监督}。但该监督不是全图替换，而是“REG anchor + feedback refinement”。当 $W_h(i)=0$ 时，目标仍是 $x_h(i)$；当 $W_h(i)>0$ 且该位置属于 homogeneous、高置信、低结构风险区域时，目标向 $\tilde s_h^P(i)$ 平滑移动。
+
+为了避免自我确认偏差，$W_h$ 必须满足三条硬性规则：
+\begin{align}
+\label{eq:feedback-rules-coreB}
+    W_h(i)&=0,\quad i\in\Omega_{\mathcal S}\cup\Omega_{\mathrm{edge}}\cup\Omega_{\mathrm{micro}},\\
+    W_h(i)&\le W_{\max}^{\mathrm{warm}},\quad \text{在 feedback warmup 初期},\\
+    W_h(i)&\downarrow 0,\quad \text{若 } |D_{\bar\theta}(x_h,c_h)_i-P_{\bar\phi}(x_h,c_h)_i|>\tau_{\mathrm{agree}}.
+\end{align}
+其中 $\Omega_{\mathcal S}$ 是结构风险区，$\Omega_{\mathrm{edge}}$ 是强边缘区，$\Omega_{\mathrm{micro}}$ 是疑似微小病灶/钙化/裂纹保护区。该规则使动态目标在低风险区域增强去噪，在高风险区域保持 REG 锚定。
+
+动态目标也可写成残差形式：
+\begin{equation}
+\label{eq:target-update-residual-coreB}
+    t_h=x_h+W_h\odot\Delta_h^P,
+    \qquad
+    \Delta_h^P=\SG[\tilde s_h^P-x_h].
+\end{equation}
+因此 target update 的强度可以通过 $W_h$ 和 $\norm{\Delta_h^P}$ 两个量单独监控。若 $\norm{\Delta_h^P}$ 很大但 $W_h$ 很低，说明 proposal 有去噪趋势但置信不足；若 $W_h$ 很高但 $D-HR$ 恶化，说明 feedback mask 过于宽松或 proposal 不满足改善假设。
+
+\begin{remark}[监督对象是否更新]
+在 本框架中，$D$ 的主监督对象确实发生更新：从固定 $x_h$ 变为 $t_h$。但是该更新是延迟的、局部的、置信加权的、结构保护的，并且由 EMA $P_{\bar\phi}$ 而非当前 $P_\phi$ 直接产生。因此，它不同于端到端互相追逐，也不同于无约束 teacher pseudo-label。
+\end{remark}
+
+\subsection{EMA 锚点与停止梯度}
+
+维护去噪器和 envelope/reliability estimator 的 EMA teacher：
+\begin{equation}
+\label{eq:ema-theta-coreA}
+    \bar\theta_{t+1}=\rho_D\bar\theta_t+(1-\rho_D)\theta_t,
+    \qquad
+    \bar\phi_{t+1}=\rho_P\bar\phi_t+(1-\rho_P)\phi_t.
+\end{equation}
+更新 $D_\theta$ 时，$A_h$、$z_d$、$c_h$、$g_h^{\mathrm{ctx}}$、$\lambda_h^{\mathrm{den}}$、$W_h$、$t_h$ 和形变场均停止梯度。更新 $P_\phi$ 时，使用 EMA 去噪器、固定输入扰动 $\nu_h=y_h^M-x_h$ 和固定残差审计指标。停止梯度不是实现细节，而是防止 $D$ loss 反向驱动 $P$ 即时生成易拟合目标的理论必要条件。
+
+
+\subsection{训练--推理主体一致性}
+
+TRACE-CT 要求去噪器在训练和推理时面对同一种中心层主体。训练阶段的 noisier 输入为
+\begin{equation}
+    y_h=x_h+\rho_t\alpha_tA_hz_d+(1-\rho_t)\beta_t\zeta_{\mathrm{safe}},
+\end{equation}
+推理阶段输入为
+\begin{equation}
+    x_h.
+\end{equation}
+二者的差异只体现在额外审计扰动或安全扰动上。因此，训练--推理分布偏移可以被分解为控制器状态 $\rho_t$、注入强度、调制图幅值、残差标定误差、结构泄漏误差和 safe perturbation 尺度，而不会额外引入由辅助网络生成主体造成的不可控偏差。当 $\rho_t=0$ 时，训练--推理偏移由 $\beta_t\zeta_{\mathrm{safe}}$ 控制；当 $\rho_t=1$ 时，偏移由 $\alpha_tA_hz_d$ 的 accepted-pool 审计误差控制。
+
+这一主体一致性也明确限制了 $P_\phi$ 的职责：$P_\phi$ 可以估计低频 envelope、噪声尺度、对齐可靠性和残差审计特征，但不能生成无约束替代 $x_h$ 的中心层图像。这样做牺牲了直接从邻层预测中心层结构的形式复杂度，却换来了更清晰的可识别性接口和更可审计的医学安全边界。
+
+
+\section{损失函数与训练流程}
+
+
+\subsection{训练策略选择：安全主干、审计搜索与门控增强}
+
+本文不采用端到端联合反传作为主策略。$P_\phi$ 虽然不生成中心层主体，但仍影响 $A_h$、$g_h^{\mathrm{prior}}$ 和残差审计。如果允许去噪损失直接反传到 $P_\phi$，模型仍可能通过调制图或门控变量编码局部答案。因此，更新 $D_\theta$ 时必须把 $A_h$、$c_h$、$g_h$、$\rho_t$、$z_d$ 与形变场视为固定构造变量。
+
+训练过程不是固定单向 Stage，而是由残差控制器驱动的状态机：
+\begin{description}[leftmargin=2.5em]
+    \item[State S0: Safe Preheat.] 设置 $\rho_t=0$，训练中心层 masked safe objective。该状态用于建立初始 $D_\theta$、稳定 EMA teacher，并避免污染残差过早进入训练。此阶段必须检查 mask 是否阻断恒等复制，不能把低 masked loss 等同于 HR 级去噪。
+    \item[State S1: Residual Audit Search.] 周期性使用 EMA teacher、低通基线、频带分解和 TTA disagreement 构造 $\cZ_{\mathrm{cand}}$，执行 patch-level audit，更新 $\cZ_{\mathrm{audit}}$ 与全局审计日志。该状态不必停止 $D_\theta$ 训练；它可以与 safe training 交替执行。
+    \item[State S2: Soft Residual Warmup.] 若硬资格 $H_t=1$，但 train--infer shift、pass rate 或 accepted-pool 高分位数仍处于边界区域，则令 $0<\rho_t<1$，从小强度残差注入开始，同时监控 $S_t$、$\rho_{\mathrm{den}}$ 与视觉 under-denoising。
+    \item[State S3: Residual-Gated Alternation.] 若式~\eqref{eq:rho-controller-auditA} 给出 $\rho_t\approx1$，启用 $y_h=x_h+\rho_t\alpha_tA_hz_d$ 或其 patch-canvas masked 版本，并采用近端块级交替更新 $P_\phi$ 与 $D_\theta$。
+    \item[State S3$^+$: Dual-Feedback Target Refinement.] 当 residual-gated 训练已稳定、$\rho_{\mathrm{den}}$ 仍偏低、且 $P$ 的 proposal 在 homogeneous 区域通过 D/P agreement 与结构安全审计时，启用 $t_h=(1-W_h)x_h+W_h\SG[\tilde s_h^P]$。该状态不改变训练输入主体，只改变低风险区域的监督目标。
+    \item[State S4: Safety Fallback.] 若长训过程中 pass rate 下降、edge correlation 升高、relative std 越界、calibration proxy 失败或 train--infer shift 过大，则降低 $\rho_t$ 或置零，回退到 safe training。
+\end{description}
+
+这种状态机是模型架构的一部分，而不是脚本补丁。它保证理论和执行层面一致：残差增强定理只在 $\rho_t=1$ 且 $z_d\in\cZ_{\mathrm{audit}}$ 时适用；当 $\rho_t=0$ 时，系统只调用 masked conditional denoising 的安全主干理论。
+
+
+\subsection{从 safe-backbone checkpoint 进入 residual-gated continuation}
+
+实际训练常常不是从零开始，而是从已经完成 safe preheat 的 checkpoint 续训。本文允许这种 continuation，但必须把它定义为一个新的状态初始化，而不是直接继承“残差已可用”的假设。
+
+设 checkpoint 为
+\begin{equation}
+    \mathcal C_0=(\theta_0,\bar\theta_0,\phi_0,\mathcal O_D^0,\mathcal O_P^0,\mathcal S_{\mathrm{ctrl}}^0),
+\end{equation}
+其中 $\bar\theta_0$ 是 EMA teacher，$\mathcal O_D^0,\mathcal O_P^0$ 是优化器状态，$\mathcal S_{\mathrm{ctrl}}^0$ 是旧 controller / residual-pool 状态。continuation 的合法初始化为：
+\begin{equation}
+    \rho_{0}^{\mathrm{cont}}=0,
+    \qquad
+    \cZ_{\mathrm{audit}}^{\mathrm{cont}}=\varnothing.
+\end{equation}
+只有当旧残差池同时满足相同数据预处理、相同 audit version、相同阈值、相同 donor/receiver 隔离规则、未超过 $T_{\mathrm{ttl}}$，并且重新抽样复检仍满足式~\eqref{eq:rho-controller-auditA} 时，旧 $\rho_t=1$ 才可以被恢复。否则，旧 $\rho_t=1$ 不得直接继承。
+
+\paragraph{必须重新 bootstrap 的状态。}
+residual pool、accepted/error 全局审计日志、$\rho_t$、$\alpha_t$ ramp、calibration proxy 统计和 pass-rate 统计必须重新 bootstrap。即使 checkpoint 中保存了 accepted residual patches，也应把它们视为 cached candidates，重新通过当前版本的 audit 后才可进入 $\cZ_{\mathrm{audit}}$。
+
+\paragraph{可以继承的状态。}
+若数据归一化、模型结构和 safe objective 未改变，可以继承 $D_\theta$、EMA teacher $D_{\bar\theta}$、$P_\phi$ 的 envelope/reliability 参数、alignment/context 的 frozen 参数或外部算子、以及学习率 scheduler 的 coarse 进度。若 EMA teacher 不稳定或 checkpoint 未保存 EMA，应以 $\bar\theta_0\leftarrow\theta_0$ 初始化，并先执行若干 safe refresh cycles，再构造候选残差。
+
+\paragraph{建议重置或弱化的状态。}
+当从 safe objective 切换到 residual-gated objective 时，$D$ 和 $P$ 的优化器动量建议重置或衰减，避免旧动量把模型推向 residual 未审计前的方向。$\alpha_t$ 必须从零或很小值重新 ramp-up；$\beta_t$ 可沿用 safe preheat 设置。近端参考点应设置为 continuation checkpoint：
+\begin{equation}
+    \theta_{\mathrm{ref}}=\theta_0,
+    \qquad
+    \phi_{\mathrm{ref}}=\phi_0.
+\end{equation}
+因此 continuation 理论不是重新证明从随机初始化收敛，而是证明在 safe-backbone 局部吸引域内，经过重新审计 bootstrap 后进入 residual-gated enhancement 的局部稳定性。
+
+完全单独训练也不理想。若 $P_\phi$、残差池和门控先验在预训练后永久冻结，去噪器改善后无法反哺残差审计；若只训练去噪器，低频 envelope 与上下文可靠性不会适配不同体数据、剂量和重建核。本文采用近端块级交替：每个 cycle 先短步更新 envelope/reliability estimator，再固定其输出和残差池，长步更新去噪器。交替是 cycle-level，而不是 mini-batch-level，以避免构造分布快速移动。
+\subsection{masked 中心层去噪损失}
+
+定义 masked 训练输入 $y_h^M$ 如式~\eqref{eq:masked-y-gated-auditA}。去噪误差为
+\begin{equation}
+    e_h^M=D_\theta(y_h^M,c_h)-x_h.
+\end{equation}
+基础损失只在 mask 区域上计算：
+\begin{equation}
+\label{eq:LD-def-coreA}
+\begin{aligned}
+\cL_D(\theta)
+=&\ \E\sum_{i=1}^m M_h(i)\omega_i(x_h)\rho_\varepsilon((e_h^M)_i)\\
+&+\lambda_g\E\norm{M_h\odot G_\sigma e_h^M}_1\\
+&+\lambda_{\mathrm{low}}\E\norm{K_{\mathrm{low}}*D_\theta(y_h^M,c_h)-K_{\mathrm{low}}*x_h}_1\\
+&+\lambda_{\mathrm{ctx}}\E\norm{\Pi_{\mathrm{hi}}J_{D,c}(y_h^M,c_h)}_F^2
++\cL_{\mathrm{gate}}\\
+&+\lambda_{\mathrm{det}}\E\norm{\Pi_{\mathrm{hi}}D_\theta(y_h^M,c_h)-\Pi_{\mathrm{hi}}x_h}_{\Omega_{\mathrm{sus}}}.
+\end{aligned}
+\end{equation}
+最后一项仍以 $x_h$ 而非 $t_h$ 作为高频锚点，因为在疑似微小结构区域，动态目标可能不可靠。$\Omega_{\mathrm{sus}}$ 可由局部对比、边缘异常、不确定性或人工植入小病灶 mask 得到。它不声称能无条件保护所有病灶，而是在理论和实验上承认：高频层特异结构不能完全由邻层上下文推断，必须在训练目标中降低被抹除的风险。
+
+
+为减少低损失恒等解，本文额外定义去噪强度诊断/弱约束项。令 $\Omega_{\mathrm{hom}}$ 为 homogeneous anatomical region，$\Omega_{\mathcal S}$ 为结构保护区域，则
+\begin{equation}
+\label{eq:L-strength-auditC}
+\begin{aligned}
+\cL_{\mathrm{strength}}
+={}&\lambda_{\mathrm{under}}\left[\rho_{\min}^{\mathrm{den}}-\rho_{\mathrm{den}}\right]_+\\
+&+\lambda_{\mathrm{over}}\left[\frac{\Std(r_{\mathrm{out}};\Omega_{\mathcal S})}{\widehat\sigma_{\mathrm{noise}}(x_h;\Omega_{\mathcal S})+\epsilon}-\rho_{\max}^{\mathrm{struct}}\right]_+ .
+\end{aligned}
+\end{equation}
+该项不是 HR 监督，也不要求全图强行去噪。它只表达一个工程可检验的先验：在均匀解剖区域，输出校正不能长期接近零；在结构区域，校正幅度不能过大。若数据集的噪声 proxy 不可靠，可只把式~\eqref{eq:L-strength-auditC} 作为日志诊断而非反传损失。
+
+动态目标还需要专门的反馈安全正则：
+\begin{equation}
+\label{eq:L-feedback-safe-coreB}
+\begin{aligned}
+\cL_{\mathrm{fb\mbox{-}safe}}
+={}&\lambda_{\mathrm{agree}}\E\norm{W_h\odot(D_{\bar\theta}(x_h,c_h)-\tilde s_h^P)}_1\\
+&+\lambda_{\mathrm{struct}}\E\norm{W_{\mathcal S}\odot(\tilde s_h^P-x_h)}_1\\
+&+\lambda_{\mathrm{tv}}\E\TV(W_h)
++\lambda_{\mathrm{warm}}\left[\E W_h-W_{\max}^{\mathrm{stage}}\right]_+ .
+\end{aligned}
+\end{equation}
+该项的作用不是让 $P$ 与 $D$ 完全一致，而是限制只有 D/P agreement 高、结构风险低、空间上稳定的区域才能启用反馈目标。$W_{\max}^{\mathrm{stage}}$ 可随训练阶段从小到大 ramp-up。
+
+可选地，在 safe preheat 后期加入弱扰动一致性：
+\begin{equation}
+\label{eq:L-safe-cons-auditC}
+    \cL_{\mathrm{safe\mbox{-}cons}}
+    =\E\norm{M_h\odot\left(D_\theta(y_h^M+\beta_t\zeta_1,c_h)-D_\theta(y_h^M+\beta_t\zeta_2,c_h)\right)}_1,
+\end{equation}
+其中 $\zeta_1,\zeta_2$ 来自同一安全 proxy family，且强度满足式~\eqref{eq:safe-perturb-scale-auditC}。该一致性项只用于降低模型对额外弱扰动的敏感性，不能替代 accepted residual calibration，也不能作为 HR 监督解释。
+
+总去噪器损失可以写为
+\begin{equation}
+\label{eq:LD-total-auditC}
+    \cL_D^{\mathrm{total}}
+    =\cL_D+
+    \cL_{\mathrm{strength}}+
+    \cL_{\mathrm{fb\mbox{-}safe}}+
+    \lambda_{\mathrm{cons}}\cL_{\mathrm{safe\mbox{-}cons}},
+\end{equation}
+其中 $\lambda_{\mathrm{cons}}$ 在 $\rho_t=0$ 或 soft warmup 初期使用，在 residual-gated 稳定阶段可降低或关闭。
+
+近端去噪器目标为
+\begin{equation}
+\label{eq:prox-LD-coreA}
+    \tilde\cL_D^{(k+1)}(\theta)=
+    \cL_D(\theta;y_h^{M,(k+1)},c_h)
+    +\frac{\gamma_D}{2}\E\norm{D_\theta(y_h^{M,(k+1)},c_h)-D_{\theta_k}(y_h^{M,(k+1)},c_h)}^2.
+\end{equation}
+该近端项限制相邻 cycle 的去噪算子漂移，使 $D_\theta$ 不必追逐快速移动的构造分布。
+
+
+\subsection{粗到细提案与反馈控制器损失}
+
+$P_\phi$ 的训练目标由五类组成：低频 envelope、上下文可靠性、噪声/扰动识别、coarse target proposal 安全性和 feedback confidence 校准。
+
+第一，低频 envelope 应与中心层块级低通强度一致：
+\begin{equation}
+\label{eq:envelope-loss-coreB}
+    \cL_{\mathrm{env}}(\phi)
+    =\E\norm{B_h-K_{\mathrm{block}}*x_h}_1
+    +\lambda_B\E\norm{\Pi_{\mathrm{hi}}B_h}_1.
+\end{equation}
+第二，门控先验应与邻层低频对齐误差一致：
+\begin{equation}
+\label{eq:reliability-loss-coreB}
+    \cL_{\mathrm{rel}}(\phi)
+    =\E\norm{g_h^{\mathrm{prior}}-\exp(-\tau_g\SG(u_h^{\mathrm{err}}))}_1.
+\end{equation}
+第三，调制图不能携带受体高频边缘：
+\begin{equation}
+\label{eq:mod-leak-loss-coreB}
+    \cL_{\mathrm{mod}}(\phi)
+    =\lambda_{\mathrm{mod}}\E\norm{\Pi_{\mathrm{hi}}A_h}_1
+    +\lambda_{\mathrm{edge}}\left[\operatorname{Corr}(A_h,\norm{G_\sigma x_h})-\delta_{\mathrm{edge}}\right]_+.
+\end{equation}
+
+第四，$P$ 必须学习识别 $D$ 输入构造中的已知扰动：
+\begin{equation}
+\label{eq:nu-loss-coreB}
+    \cL_\nu(\phi)
+    =\E\norm{M_h\odot(\widehat\nu_h-\SG[y_h^M-x_h])}_1
+    +\lambda_{\nu,\mathrm{hi}}\E\norm{\Pi_{\mathrm{lo}}\widehat\nu_h-\Pi_{\mathrm{lo}}\SG[y_h^M-x_h]}_1.
+\end{equation}
+该项使 $P$ 从已知扰动中学习噪声/结构区分能力，而不是凭空生成 clean 图像。
+
+第五，coarse target proposal 必须满足低频锚定、结构保护和 EMA D 稳定输出的一致性：
+\begin{equation}
+\label{eq:target-proposal-loss-coreB}
+\begin{aligned}
+\cL_{\mathrm{tar}}(\phi)
+={}&\lambda_{P,\mathrm{lo}}\E\norm{\Pi_{\mathrm{lo}}(\tilde s_h^P-x_h)}_1\\
+&+\lambda_{P,\mathcal S}\E\norm{W_{\mathcal S}\odot(\tilde s_h^P-x_h)}_1\\
+&+\lambda_{D\to P}\E\norm{W_h\odot(\tilde s_h^P-\SG[D_{\bar\theta}(x_h,c_h)])}_1.
+\end{aligned}
+\end{equation}
+其中第三项只在 $W_h$ 高的低风险区域启用。它不是要求 $P$ 全图复制 $D$，而是用 EMA 去噪器的稳定输出为 homogeneous 区域的 coarse target proposal 提供方向。
+
+
+\paragraph{同质区域独立去噪驱动损失。}
+本框架将 $D\to P$ 延迟反馈从主导监督降级为结构稳定项，同时加入独立的同质区域噪声抑制项。定义
+\begin{equation}
+\label{eq:L-P-hom-noise-coreC}
+    \mathcal L_{P}^{\mathrm{hom\mbox{-}noise}}
+    =\left[
+    \frac{\Std_{\Omega_{\mathrm{hom}}}(\Pi_{\mathcal N}\tilde s_h^P)}
+    {\Std_{\Omega_{\mathrm{hom}}}(\Pi_{\mathcal N}x_h)+\epsilon}
+    -\gamma_{\mathrm{hom}}
+    \right]_+.
+\end{equation}
+该项只作用于 homogeneous 区域，并必须与低频锚定和结构 anchor 同时使用。它不能被全图 TV 平滑或普通高频压制替代，因为后者会把真实细结构也当作噪声。
+
+\paragraph{结构子空间 agreement。}
+全空间 D/P agreement 由结构子空间 agreement 替代：
+\begin{equation}
+\label{eq:L-P-struct-agree-coreC}
+    \mathcal L_{D\to P}^{\mathcal S}
+    =\E\norm{W_h^{\mathrm{safety}}\odot
+    \Pi_{\mathcal S}\left(\tilde s_h^P-\SG[D_{\bar\theta}(x_h,c_h)]\right)}_1.
+\end{equation}
+这意味着 $P$ 可以在 $\Pi_{\mathcal N}$ 方向上比 $D_{\bar\theta}$ 更积极去噪，只要结构方向不漂移。
+
+\paragraph{benefit-aware feedback 校准。}
+feedback mask 训练增加 benefit 校准：
+\begin{equation}
+\label{eq:L-W-benefit-coreC}
+    \mathcal L_W^{\mathrm{benefit}}
+    =\E\norm{W_h^{\mathrm{benefit}}-
+    \clip\left(
+    \frac{[\Std_{\mathcal N}(x_h)-\Std_{\mathcal N}(\tilde s_h^P)]_+}
+    {\widehat\sigma_{\mathrm{noise}}(x_h)+\epsilon},0,1
+    \right)}_1.
+\end{equation}
+最终动态目标应使用 $W_h^{\mathrm{fb}}=W_h^{\mathrm{safety}}\odot W_h^{\mathrm{benefit}}$，而不是仅使用 safety mask。
+
+feedback mask 的损失为
+\begin{equation}
+\label{eq:feedback-mask-loss-coreB}
+\begin{aligned}
+\cL_W(\phi)
+={}&\lambda_{W,\mathrm{hom}}\E\norm{W_h-H_{\mathrm{hom}}(1-H_{\mathcal S})(1-H_{\mathrm{edge}})}_1\\
+&+\lambda_{W,\mathrm{agree}}\E\norm{W_h\odot \one\{|D_{\bar\theta}(x,c)-P_{\bar\phi}(x,c)|>\tau_{\mathrm{agree}}\}}_1\\
+&+\lambda_{W,\mathrm{tv}}\E\TV(W_h).
+\end{aligned}
+\end{equation}
+若没有可靠的 homogeneous 或结构 mask，则应降低 $W_h$ 上限，而不是让 mask 自由学习。
+
+综合得到
+\begin{equation}
+\label{eq:LP-total-coreB}
+    \cL_P^{\mathrm{total}}
+    =\cL_{\mathrm{env}}+\cL_{\mathrm{rel}}+\cL_{\mathrm{mod}}+\cL_\nu+\cL_{\mathrm{tar}}+\cL_P^{\mathrm{hom\mbox{-}noise}}+\cL_{D\to P}^{\mathcal S}+\cL_W+\cL_W^{\mathrm{benefit}}.
+\end{equation}
+近端目标为
+\begin{equation}
+\label{eq:prox-LP-coreB}
+\begin{aligned}
+    \tilde\cL_P^{(k+1)}(\phi)=
+    &\ \cL_P^{\mathrm{total}}(\phi)\\
+    &+\frac{\gamma_P}{2}\E\norm{P_\phi(\mathcal I_h^P)-P_{\phi_k}(\mathcal I_h^P)}^2.
+\end{aligned}
+\end{equation}
+
+\subsection{残差池审计损失与采样规则}
+
+供体残差进入残差池前必须满足以下审计指标：
+\begin{equation}
+\label{eq:residual-audit-coreA}
+\begin{aligned}
+    &\E\norm{\Pi_{\mathrm{lo}}z_d}\le\epsilon_{\mathrm{lo}},
+    \qquad
+    \operatorname{Corr}(z_d,\norm{G_\sigma x_d})\le\epsilon_{\mathrm{edge}},\\
+    &\SWD(\mathcal L(A_hz_d),\mathcal L(\widehat n_h))\le\epsilon_{\mathrm{cal}},
+    \qquad
+    \E\norm{\Pi_{\mathcal S}q_d}\le\epsilon_{\mathrm{struct}}.
+\end{aligned}
+\end{equation}
+其中 $\widehat n_h$ 在无真实噪声参考时由式~\eqref{eq:qnoise-proxy-family-auditB} 的 proxy family 近似，包括 MAD/NPS 合成噪声、TTA/dropout disagreement、conservative denoiser residual、Poisson-Gaussian 物理 proxy，以及在几何配准可靠时可选的 HR--REG 或重复扫描 residual。若没有任何可用 proxy，必须设置 $\rho_t=0$ 或仅启用 $\zeta_{\mathrm{safe}}$，不能把 $\epsilon_{\mathrm{cal}}$ 当作无法验证的理论符号。
+
+\subsection{训练节奏：预热、审计、近端交替与弱微调}
+
+\paragraph{阶段 0：中心层 masked 去噪器预热。}
+先使用保守外生残差或轻量合成扰动构造 $y_h^M$，训练 $D_\theta(y_h^M,c_h)\approx x_h$。此阶段不依赖复杂 envelope 网络，只要求模型进入能保留大尺度结构的局部盆地。建议占总预算的 $5\%$--$15\%$。
+
+\paragraph{阶段 1：目标估计器预训练。}
+冻结 $D_{\bar\theta}$ 或使用其稳定 EMA 输出，训练 $P_\phi$ 拟合 $K_{\mathrm{block}}*x_h$、对齐误差诱导的可靠性先验、调制图低泄漏约束、输入扰动识别 $\widehat\nu_h$ 和初始 feedback mask。该阶段允许 $P$ 形成 proposal，但 $W_h$ 上限应很低，且 proposal 不进入 $D$ 的主监督。
+
+\paragraph{阶段 2：残差池构建与审计。}
+使用供体体积构造 $\hat r_d$，经高通、归一化、结构泄漏审计和跨体积采样筛选得到 $z_d$。同体积错层残差只能作为对照实验，不应作为默认残差源，因为它更容易共享轴向结构。
+
+\paragraph{阶段 3：近端块级交替共精化。}
+第 $k$ 个 cycle 中：
+\begin{enumerate}[leftmargin=2em]
+    \item 固定 $D_{\bar\theta_k}$ 和当前输入构造，短步更新 $P_\phi$，求解 $\phi_{k+1}\approx\arg\min_\phi\tilde\cL_P^{(k+1)}(\phi)$。此步使用 $\nu_h=y_h^M-x_h$ 监督扰动识别，并用 EMA $D$ 监督低风险区域的 proposal。
+    \item 固定 $P_{\bar\phi_{k+1}}$，缓存 $A_h^{(k+1)}$、$g_h^{\mathrm{ctx},(k+1)}$、$\lambda_h^{\mathrm{den},(k+1)}$、$W_h^{(k+1)}$、$t_h^{(k+1)}$、$z_d$ 和 $y_h^{M,(k+1)}$，并全部停止梯度。
+    \item 固定构造分布与动态目标，长步更新 $D_\theta$，求解 $\theta_{k+1}\approx\arg\min_\theta\tilde\cL_D^{(k+1)}(\theta)$。
+    \item 更新 EMA teacher，周期性刷新残差池，并记录构造分布漂移 $\delta_Y^{(k)}$。
+\end{enumerate}
+推荐 $K_D:K_P\approx3:1$ 到 $5:1$。若 $P_\phi$ 更新太频繁，$y_h^M$ 的分布会快速移动；若 $P_\phi$ 更新太少，调制图和门控先验又会滞后。
+
+\paragraph{阶段 4：可选弱联合微调。}
+允许 adapter、归一化尺度或门控网络进行低学习率弱微调，但仍不允许 $\cL_D$ 沿 $A_h$、$z_d$ 或 $c_h$ 构造链路反传到 $P_\phi$ 或形变场。弱微调的目标是校准尺度，而不是重新学习伪输入生成器。
+
+\subsection{训练过程中的不变量}
+
+\paragraph{不变量 I：训练输入主体始终是 \texorpdfstring{$x_h$}{x-h}。}
+无论是否使用 mask，$y_h$ 的主体都来自真实中心 noisy slice。$P_\phi$ 可以影响低频调制、可靠性、审计变量和动态目标 $t_h$，但不能生成训练输入主体。
+
+\paragraph{不变量 II：更新 \texorpdfstring{$D_\theta$}{D-theta} 时构造变量固定。}
+在求解 $\tilde\cL_D^{(k+1)}$ 时，$A_h$、$z_d$、$c_h$、$M_h$、$g_h^{\mathrm{ctx}}$、$\lambda_h^{\mathrm{den}}$、$W_h$、$t_h$ 和形变场均视为常量：
+\begin{equation}
+    \nabla_\theta A_h=\nabla_\theta z_d=\nabla_\theta c_h=\nabla_\theta t_h=0,
+    \qquad
+    \nabla_\phi \cL_D=0.
+\end{equation}
+
+\paragraph{不变量 III：残差池先审计后注入。}
+任何供体残差必须通过低频能量、边缘相关、频谱白化、结构投影和跨体积来源检查，才能进入 $\mathcal Z$。未通过审计的残差不参与 $y_h$ 构造。
+
+\paragraph{不变量 IV：邻层上下文只作为可门控低频条件。}
+$c_h$ 不作为监督目标，不参与高频残差注入，也不能绕过 $g_h$ 直接主导输出。该不变量对应 $\epsilon_{\mathrm{ctx}}$ 和 $\epsilon_{\mathrm{jac}}$ 两个可审计量。
+
+由近端项和构造变量冻结可得到相邻构造输入分布漂移接口：
+\begin{equation}
+\label{eq:Y-drift-coreA}
+    W_1\big(\mathcal L(y_h^{M,(k+1)},c_h),\mathcal L(y_h^{M,(k)},c_h)\big)
+    \le C_P\gamma_P^{-1/2}+C_D\gamma_D^{-1/2}+C_{\mathrm{pool}}\epsilon_{\mathrm{refresh}}.
+\end{equation}
+
+\section{网络稳定化接口}
+
+\subsection{卷积残差块}
+
+去噪器和预测器均可由卷积残差块组成。单个块写为
+\begin{equation}
+\label{eq:conv-residual-block}
+    u_{\ell+1}=u_\ell+\Gamma_\ell F_\ell(u_\ell),
+\end{equation}
+其中 $F_\ell$ 是卷积、归一化和逐点非线性的组合，$\Gamma_\ell=\diag(\gamma_{\ell,1},\ldots,\gamma_{\ell,m})$ 是可学习或固定残差缩放。实现中可通过谱归一化、权重衰减、残差缩放或梯度裁剪控制 $\norm{J_{F_\ell}}$ 和 $\norm{\Gamma_\ell}$。
+
+\subsection{残差形式输出的局部稳定性}
+
+若 $R_\theta$ 在局部可容许域内为 $L_R$-Lipschitz，则
+\begin{equation}
+    \norm{D_\theta(u,c)-D_\theta(v,c)}
+    \le (1+\eta_D L_R)\norm{u-v}.
+\end{equation}
+因此减小 $\eta_D$、限制 $R_\theta$ 的谱范数、缩小网络深度或使用残差缩放，都会直接降低去噪器的局部 Lipschitz 常数。本文将这些实现细节统一吸收到局部有界假设中。
+
+
+
+\section{理论假设与深度剖析}
+\label{sec:assumptions}
+
+本节围绕五个可审计接口建立假设：低通上下文、masked 条件可识别性、外生残差标定与结构泄漏、粗到细延迟双反馈目标更新、近端交替稳定性。每个假设都应对应后续实验中的可测指标。
+
+\begin{assumption}[(A0) 延迟双互反馈的基本合法性]
+在第 $k$ 个 cycle 中，用于监督 $D_\theta$ 的动态目标
+\begin{equation}
+    t_h^{(k)}=(1-W_h^{(k)})\odot x_h+W_h^{(k)}\odot\SG[\tilde s_h^{P,k}]
+\end{equation}
+必须由 EMA target estimator $P_{\bar\phi_k}$ 产生，并在 $D$ 更新中停止梯度。$W_h^{(k)}$ 必须满足结构风险区域关闭、D/P disagreement 区域关闭、warmup 阶段上限受控三条规则。若这些规则无法实现，则 本框架 退化为 固定 REG 目标方案，不允许声称启用了双互反馈目标更新。
+\end{assumption}
+
+\begin{assumption}[(A0$'$) 可信区域内的 pseudo-target 改善]
+存在低风险区域 $\Omega_{\mathrm{fb}}=\{i:W_h(i)>0\}$，使得 $P$ 的 EMA proposal 在该区域相对 REG 具有期望改善：
+\begin{equation}
+\label{eq:p-improvement-assumption-coreB}
+    \E\norm{\tilde s_h^P-s_h}_{\Omega_{\mathrm{fb}}}
+    \le
+    \kappa_P\E\norm{x_h-s_h}_{\Omega_{\mathrm{fb}}}+\epsilon_P,
+    \qquad 0\le\kappa_P<1.
+\end{equation}
+该假设不能仅凭训练损失断言；必须通过 HR/REG validation、模拟噪声退化、重复扫描、低剂量/常规剂量配对、homogeneous ROI 噪声谱下降或保守 proxy 进行实证支持。若无法验证，应把 $W_h$ 上限调低，并只把目标更新作为 ablation。
+\end{assumption}
+
+
+
+
+
+\begin{assumption}[(A0$''$) 同质区域独立噪声抑制动力]
+在同质安全区域 $\Omega_{\mathrm{hom}}$ 内，$P$ 的 proposal 满足低频结构锚定、结构子空间漂移受控和噪声子空间能量下降：
+\begin{equation}
+\label{eq:a0pp-hom-coreC}
+    \Std_{\Omega_{\mathrm{hom}}}(\Pi_{\mathcal N}\tilde s_h^P)
+    \le
+    \gamma_{\mathrm{hom}}
+    \Std_{\Omega_{\mathrm{hom}}}(\Pi_{\mathcal N}x_h)+\epsilon_{\mathrm{hom}},
+    \qquad 0<\gamma_{\mathrm{hom}}<1,
+\end{equation}
+\begin{equation}
+\label{eq:a0pp-struct-coreC}
+    \E\norm{\Pi_{\mathcal S}(\tilde s_h^P-x_h)}_{\Omega_{\mathrm{hom}}}
+    \le \epsilon_{P,\mathcal S},
+    \qquad
+    \E\norm{\Pi_{\mathrm{lo}}(\tilde s_h^P-x_h)}_{\Omega_{\mathrm{hom}}}
+    \le \epsilon_{P,\mathrm{lo}}.
+\end{equation}
+该假设是 本框架 突破 常规双反馈设计 闭环保守性的核心。若该假设在验证集或 proxy 指标上不成立，则不能启用 $P$-proposal target refinement，只能退回 常规双反馈设计/固定 REG 目标方案 的保守路径。
+\end{assumption}
+
+\begin{assumption}[(A0$^{\prime\prime\prime}$) 结构子空间 agreement 与 benefit-aware feedback]
+D/P agreement 只在结构子空间中约束，噪声子空间中的 proposal 创新不被 agreement 惩罚：
+\begin{equation}
+    \E\norm{W_h^{\mathrm{safety}}\odot\Pi_{\mathcal S}(\tilde s_h^P-D_{\bar\theta}(x_h,c_h))}\le\epsilon_{\mathrm{agree},\mathcal S}.
+\end{equation}
+feedback mask 分解为
+\begin{equation}
+    W_h^{\mathrm{fb}}=W_h^{\mathrm{safety}}\odot W_h^{\mathrm{benefit}},
+\end{equation}
+其中 $W_h^{\mathrm{benefit}}$ 只能由可测的噪声子空间下降、局部稳定性和校准 proxy 诱导。安全但无收益的区域不应推动 target update。
+\end{assumption}
+
+\begin{assumption}[(A1) 形变对齐后的主体结构局部可预测性与层特异分解]
+中心 clean structure 分解为
+\begin{equation}
+    s_h=s_h^{\mathrm{sm}}+\ell_h,
+\end{equation}
+其中 $s_h^{\mathrm{sm}}$ 是经低通形变对齐后可由邻层解释的主体结构，$\ell_h$ 是单层病灶、微小钙化、裂纹、局部分叉或突变边界。存在受限对齐算子 $\mathcal W_{h\pm1\to h}$，使得
+\begin{equation}
+\label{eq:aligned-smooth-coreA}
+    \left\|s_h^{\mathrm{sm}}-
+    \mathcal P^\star\left(\mathcal W_{h-1\to h}s_{h-1}^{\mathrm{sm}},
+    \mathcal W_{h+1\to h}s_{h+1}^{\mathrm{sm}}\right)\right\|
+    \le \epsilon_{\mathrm{reg}}+c_0\kappa_{\mathrm{eff}}\Delta z^2.
+\end{equation}
+\end{assumption}
+
+\begin{remark}[A1 深度剖析]
+A1 不要求全部中心层结构都能由邻层预测。$\ell_h$ 的存在是医学安全性的关键：模型必须承认有些结构是层特异的，不能用邻层缺失来判定其为噪声。因此，后续误差界中 $\ell_h$ 不是可消除误差，而是提醒实验必须检查小病灶保持率、微钙化召回和裂纹边界保持。
+\end{remark}
+
+\begin{assumption}[(A2) 低通上下文与上下文敏感性控制]
+上下文满足
+\begin{equation}
+\label{eq:ctx-bound-assumption-coreA}
+    \E\norm{\Pi_{\mathrm{hi}}c_h}\le\epsilon_{\mathrm{ctx}},
+\end{equation}
+且去噪器对上下文高频分量的敏感性满足
+\begin{equation}
+\label{eq:ctx-jac-assumption-coreA}
+    \E\norm{\Pi_{\mathrm{hi}}J_{D,c}(x_h,c_h)}_F\le\epsilon_{\mathrm{jac}}.
+\end{equation}
+门控满足对齐先验一致性和防塌缩条件：
+\begin{equation}
+\label{eq:gate-assumption-coreA}
+    \E\norm{g_h-g_h^{\mathrm{prior}}}_1\le\epsilon_g,
+    \qquad
+    \E(g_h\mid u_h^{\mathrm{err}}<\delta_g)\ge g_{\min}.
+\end{equation}
+\end{assumption}
+
+\begin{remark}[A2 深度剖析]
+A2 的目的不是让上下文无信息，而是让上下文只携带低频解剖域和可靠性信息。如果 $\epsilon_{\mathrm{jac}}$ 很大，即使 $c_h$ 本身低通，网络也可能对微弱上下文高频扰动高度敏感，从而重建邻层高频答案。Jacobian probing 是必要实验，而不能只报告 $c_h$ 的频谱。
+\end{remark}
+
+\begin{assumption}[(A3) 低频 envelope 调制与高频泄漏控制]
+调制图由低频 envelope 得到，满足
+\begin{equation}
+\label{eq:mod-bound-assumption-coreA}
+    A_h=\diag\{a_\phi(B_h)\},
+    \qquad
+    0<a_{\min}\le a_\phi(B_h)\le a_{\max},
+\end{equation}
+且
+\begin{equation}
+\label{eq:a-mod-leak-coreA}
+    \E\norm{\Pi_{\mathrm{hi}}A_h}\le\epsilon_{\mathrm{mod}},
+    \qquad
+    \operatorname{Corr}(A_h,\norm{G_\sigma x_h})\le\epsilon_{\mathrm{edge}}.
+\end{equation}
+\end{assumption}
+
+\begin{remark}[A3 深度剖析]
+如果 $A_h$ 在边缘处系统性减小或增大注入强度，它会成为方差图捷径。调制图只能反映宏观密度和剂量相关噪声尺度，不能携带中心层高频结构位置。因此 $K_{\mathrm{block}}$ 的尺度必须大于典型边缘宽度和小病灶尺度。
+\end{remark}
+
+
+\begin{assumption}[(A4) 受审计残差池、结构泄漏与条件标定]
+残差增强路径只在 $\rho_t=1$ 时启用。若 $\rho_t=1$，则采样残差满足
+\begin{equation}
+\label{eq:a4-z-decomp-auditA}
+    z_d\in\cZ_{\mathrm{audit}},
+    \qquad
+    z_d=\xi_d+q_d,
+    \qquad
+    z_d\perp x_h \ \text{在跨体积 receiver-donor 采样意义下近似成立}.
+\end{equation}
+其中 $\xi_d$ 为噪声成分，$q_d$ 为结构泄漏成分。对所有通过审计的残差，有
+\begin{equation}
+\label{eq:a4-struct-auditA}
+    \E\norm{\Pi_{\mathcal S}q_d}\le\epsilon_{\mathrm{struct}},
+    \qquad
+    \E r_{\mathrm{edge}}(z_d,x_d)\le\epsilon_{\mathrm{edge}},
+    \qquad
+    \E r_{\mathrm{lf}}(z_d)\le\epsilon_{\mathrm{lf}}.
+\end{equation}
+实际注入噪声与目标噪声族满足 sliced-Wasserstein 或替代 proxy 标定：
+\begin{equation}
+\label{eq:a4-calibration-auditA}
+    \SWD\big(\mathcal L(A_h\xi_d\mid B_h,c_h),\mathcal L(n_h\mid B_h,c_h)\big)
+    \le\epsilon_{\mathrm{cal}}.
+\end{equation}
+归一化均值估计误差满足
+\begin{equation}
+    \E\norm{\hat\mu_t-\mu^\star}\le\epsilon_\mu,
+    \qquad
+    0\le a_t\le a_{\max}.
+\end{equation}
+若 $\rho_t=0$，则本假设中关于 $z_d$ 的部分不被调用，训练退回到 $\zeta_{\mathrm{safe}}$ 或 $\beta_t=0$ 的安全主干。
+\end{assumption}
+
+\begin{remark}[A4 深度剖析]
+A4 不是默认假设“EMA residual 一定可用”。它只对通过审计的残差成立。若真实数据上出现 $|\cZ_{\mathrm{audit}}|=0$，理论并不允许强行把未通过审计的 residual 当作噪声注入；正确行为是 $\rho_t=0$。因此，残差池失败不是理论外异常，而是受审计门控架构必须显式处理的状态。
+\end{remark}
+
+\begin{assumption}[(A5) masked 条件噪声独立与 blind-spot 可识别性]
+令 $M_h$ 是随机 block mask，$B_i$ 是包含像素 $i$ 的 masked block，$\Omega\setminus B_i$ 是可见区域。对 mask 区域内噪声，假设存在偏差项 $\epsilon_{\mathrm{corr}}$ 使
+\begin{equation}
+\label{eq:masked-independence-coreA}
+    \left\|
+    \E[n_i\mid x_{\Omega\setminus B_i},c_h,s_h]
+    \right\|
+    \le\epsilon_{\mathrm{corr}}.
+\end{equation}
+若 CT 重建噪声具有空间相关性，该项不为零。mask block 尺度应大于主要噪声相关长度，但小于典型病灶尺度上界，以平衡独立性与细节保持。
+\end{assumption}
+
+\begin{remark}[A5 深度剖析]
+这是本文可识别性分析的核心。可识别性建立在 masked 条件独立上，并承认 CT 噪声相关性导致 $\epsilon_{\mathrm{corr}}$。实际应通过噪声自相关、重建核频谱和不同 mask 尺度下的残差相关实验估计该项。
+\end{remark}
+
+\begin{assumption}[(A6) 中心层条件残差去噪器 Lipschitz 稳定性]
+在局部可容许域内，$R_0$、$R_c$、$g_h$ 与卷积残差块均 Lipschitz 有界。若残差分支整体为 $L_R$-Lipschitz，则
+\begin{equation}
+\label{eq:lr-arch-bound-coreA}
+    \Lip(D_\theta)\le 1+\eta_DL_R=:L_D.
+\end{equation}
+\end{assumption}
+
+\begin{remark}[A6 深度剖析]
+该假设不能只靠一句“网络 Lipschitz 有界”带过。实际应通过谱范数约束、残差缩放、梯度裁剪和随机扰动测试估计 $L_D$。$L_D$ 越大，外生残差结构泄漏和调制误差被放大的风险越高。
+\end{remark}
+
+\begin{assumption}[(A7) 工程损失 surrogate gap 与 population 稳定性]
+令 $D_2^\star$ 为 masked 平方风险下的 population minimizer，$D_\rho^\star$ 为 Charbonnier 风险下的 population minimizer。假设
+\begin{equation}
+\label{eq:rho-gap-coreA}
+    \E\norm{D_\rho^\star(u,c)-D_2^\star(u,c)}\le\epsilon_\rho.
+\end{equation}
+同时 population 解关于注入分布扰动、训练--推理分布偏移和上下文扰动在局部 Lipschitz 意义下稳定，稳定常数分别为 $C_{\mathrm{cal}},C_{\mathrm{shift}},C_{\mathrm{ctx}}$。
+\end{assumption}
+
+\begin{remark}[A7 深度剖析]
+A7 只记录 Charbonnier 与平方风险、population 与实际训练之间的稳定差异。clean recovery 由 A5 的 masked 可识别性和后续命题推出，并带有不可避免的偏差项。
+\end{remark}
+
+\begin{assumption}[(A8) EMA 锚点进入局部可容许域]
+预热后，EMA 去噪器和 envelope/reliability estimator 满足
+\begin{equation}
+\label{eq:anchor-quality-coreA}
+    \E\norm{D_{\bar\theta}(x_h,c_h)-s_h}\le\epsilon_A,
+    \qquad
+    \E\norm{P_{\bar\phi}(\mathcal I_h)-P_\phi^\star(\mathcal I_h)}\le\epsilon_P.
+\end{equation}
+当前模型与 EMA teacher 的输出漂移满足
+\begin{equation}
+    \E\norm{D_\theta(x_h,c_h)-D_{\bar\theta}(x_h,c_h)}\le\epsilon_{\mathrm{ema}}.
+\end{equation}
+\end{assumption}
+
+\begin{assumption}[(A9) 闭环增益的可调充分条件]
+定义去噪误差 $e_D=\E\norm{D_\theta(x_h,c_h)-s_h}$ 和残差结构泄漏误差 $e_R=\E\norm{\Pi_{\mathcal S}q_d}$。假设存在可由模块 Lipschitz 与超参数控制的增益
+\begin{equation}
+\label{eq:gain-decomp-coreA}
+    C_A\le L_P L_W C_{\mathrm{audit}}(\gamma_P^{-1/2}+\epsilon_{\mathrm{ema}}),
+    \qquad
+    C_R\le L_D\alpha_{\max}a_{\max}C_{\mathrm{dist}},
+\end{equation}
+使得
+\begin{equation}
+\label{eq:feedback-compression-coreA}
+    e_R\le B_R+C_Ae_D,
+    \qquad
+    e_D\le B_D+C_Re_R.
+\end{equation}
+若
+\begin{equation}
+\label{eq:gain-condition-coreA}
+    L_P L_W C_{\mathrm{audit}}(\gamma_P^{-1/2}+\epsilon_{\mathrm{ema}})
+    \cdot
+    L_D\alpha_{\max}a_{\max}C_{\mathrm{dist}}<1,
+\end{equation}
+则闭环为局部压缩。
+\end{assumption}
+
+\begin{remark}[A9 深度剖析]
+本文不给定孤立的压缩假设，而是给出可调充分条件。降低 $\alpha_{\max}$、降低 $L_D$、增大 $\gamma_P$、加强残差审计和限制形变 Lipschitz 都会降低闭环增益。这样理论才真正指导工程选择。
+\end{remark}
+
+\begin{assumption}[(A10) 近端块级交替的 Lyapunov 下降条件]
+定义联合 Lyapunov 目标
+\begin{equation}
+\label{eq:lyapunov-coreA}
+    \Phi_k(\theta,\phi)=
+    \cL_D(\theta;y_h^{M,(k)},c_h)
+    +\lambda_P\cL_P(\phi)
+    +\frac{\gamma_D}{2}\norm{D_\theta-D_{\theta_k}}_{\mathcal X}^2
+    +\frac{\gamma_P}{2}\norm{P_\phi-P_{\phi_k}}_{\mathcal I}^2.
+\end{equation}
+每个 block 更新满足带误差的充分下降：
+\begin{equation}
+\label{eq:lyapunov-descent-coreA}
+    \Phi_{k+1}
+    \le
+    \Phi_k
+    -c_D\norm{D_{\theta_{k+1}}-D_{\theta_k}}_{\mathcal X}^2
+    -c_P\norm{P_{\phi_{k+1}}-P_{\phi_k}}_{\mathcal I}^2
+    +\varepsilon_k,
+\end{equation}
+且 $\sum_k\varepsilon_k<\infty$。构造分布漂移满足
+\begin{equation}
+\label{eq:drift-summable-coreA}
+    \sum_k W_1\big(\mathcal L(y_h^{M,(k+1)},c_h),\mathcal L(y_h^{M,(k)},c_h)\big)^2<\infty.
+\end{equation}
+\end{assumption}
+
+\begin{remark}[A10 深度剖析]
+本文采用局部 Lyapunov 下降视角来分析交替训练轨迹。非凸深度网络中更合理的结论是：若每个近端 block 都能充分下降，且目标移动和随机优化误差可求和，则轨迹进入局部 stationary set。这比“收敛到唯一 $D^\star$”弱，但更可信。
+\end{remark}
+
+\begin{assumption}[(A11) 随机梯度与局部紧性]
+随机梯度噪声为 martingale difference，二阶矩有界。训练迭代以高概率保持在局部可容许紧集 $\mathcal U_{\mathrm{adm}}$ 内；在该集合内，上述 Lipschitz、上下文泄漏、残差标定、结构泄漏、近端下降和目标漂移条件同时成立。
+\end{assumption}
+
+
+\section{主要理论结果}
+
+\subsection{动态目标的风险分解}
+
+本框架中 $D$ 的监督目标不再固定为 $x_h$，因此需要单独分析 target refinement 带来的收益与风险。令
+\begin{equation}
+    t_h=(1-W_h)\odot x_h+W_h\odot\tilde s_h^P.
+\end{equation}
+则相对 clean structure 的误差满足逐点分解
+\begin{equation}
+\label{eq:target-error-decompose-coreB}
+    t_h-s_h=(1-W_h)\odot n_h+W_h\odot(\tilde s_h^P-s_h).
+\end{equation}
+因此，target update 只在 $\tilde s_h^P$ 比 $x_h$ 更接近 $s_h$ 的区域才会改善监督对象。
+
+\begin{proposition}[置信目标更新的期望改善]
+\label{prop:target-improvement-coreB}
+若 A0$'$ 成立，且 $W_h$ 在结构风险区域关闭，则在 feedback 区域有
+\begin{equation}
+\label{eq:target-improvement-bound-coreB}
+    \E\norm{t_h-s_h}_{\Omega_{\mathrm{fb}}}
+    \le
+    (1-\bar W_h+\bar W_h\kappa_P)\E\norm{x_h-s_h}_{\Omega_{\mathrm{fb}}}
+    +\bar W_h\epsilon_P+\tau_W,
+\end{equation}
+其中 $\bar W_h$ 是 $W_h$ 在 $\Omega_{\mathrm{fb}}$ 上的平均强度，$\tau_W$ 吸收 $W_h$ 与误差相关性、mask 估计误差和区域边界误差。
+\end{proposition}
+
+\begin{proof}[证明思路]
+由式~\eqref{eq:target-error-decompose-coreB}，在 $\Omega_{\mathrm{fb}}$ 上利用三角不等式，得到
+\begin{equation}
+    \norm{t_h-s_h}\le (1-W_h)\norm{x_h-s_h}+W_h\norm{\tilde s_h^P-s_h}.
+\end{equation}
+对期望取值并代入 A0$'$ 即可。$\tau_W$ 记录 $W_h$ 与局部误差不独立时产生的二阶项。该命题说明 本框架的收益不是无条件的；若 $\kappa_P\ge1$ 或 $W_h$ 错开到结构风险区，动态目标可能恶化监督。
+\end{proof}
+
+
+
+\subsection{同质区域独立去噪动力的 target improvement}
+
+本框架的新增目标是证明：即使 $D_{\bar\theta}$ 仍然保守，$P$ 也可以在同质安全区域通过独立噪声抑制约束产生比 REG 更优的 proposal。下面命题给出一个可审计的充分条件。
+
+\begin{proposition}[同质区域噪声抑制导致 proposal 改善]
+\label{prop:hom-noise-improvement-coreC}
+假设在 $\Omega_{\mathrm{hom}}$ 上，clean structure 的噪声子空间能量满足 $\Std(\Pi_{\mathcal N}s_h)\le\epsilon_{s,\mathcal N}$，且 $P$ proposal 满足 A0$''$。若低频和结构子空间漂移分别由 $\epsilon_{P,\mathrm{lo}}$ 与 $\epsilon_{P,\mathcal S}$ 控制，则
+\begin{equation}
+\label{eq:hom-improvement-bound-coreC}
+    \E\norm{\tilde s_h^P-s_h}_{\Omega_{\mathrm{hom}}}
+    \le
+    \kappa_{\mathrm{hom}}\E\norm{x_h-s_h}_{\Omega_{\mathrm{hom}}}
+    +C_{\mathrm{lo}}\epsilon_{P,\mathrm{lo}}
+    +C_{\mathcal S}\epsilon_{P,\mathcal S}
+    +C_N\epsilon_{s,\mathcal N}
+    +\epsilon_{\mathrm{proxy}},
+\end{equation}
+其中 $\kappa_{\mathrm{hom}}$ 随 $\gamma_{\mathrm{hom}}$ 减小而减小。若右侧主导系数满足 $\kappa_{\mathrm{hom}}<1$ 且误差项较小，则 $\tilde s_h^P$ 在同质区域比 $x_h$ 更接近 $s_h$。
+\end{proposition}
+
+\begin{proof}[证明思路]
+将误差分解为低频结构部分、结构子空间部分和噪声子空间部分：
+\begin{equation}
+    \tilde s_h^P-s_h
+    =\Pi_{\mathrm{lo}}(\tilde s_h^P-s_h)
+    +\Pi_{\mathcal S}(\tilde s_h^P-s_h)
+    +\Pi_{\mathcal N}(\tilde s_h^P-s_h)
+    +r_{\perp}.
+\end{equation}
+低频项由式~\eqref{eq:a0pp-struct-coreC} 控制，结构项由 $\Pi_{\mathcal S}$ anchor 控制，噪声子空间项由式~\eqref{eq:a0pp-hom-coreC} 控制。$r_\perp$ 和 proxy 误差进入 $\epsilon_{\mathrm{proxy}}$。该命题的意义在于：proposal 改善不是来自 $D$ teacher 已经更干净，而是来自可测的同质区域噪声子空间能量下降。
+\end{proof}
+
+\begin{proposition}[结构子空间 agreement 不惩罚噪声子空间创新]
+\label{prop:struct-agree-coreC}
+若 agreement loss 采用式~\eqref{eq:struct-agree-coreC}，则对于任意满足 $\Pi_{\mathcal S}\Delta=0$ 的 proposal innovation $\Delta$，有
+\begin{equation}
+    \mathcal L_{\mathrm{agree}}^{\mathcal S}(\tilde s_h^P+\Delta,D_{\bar\theta})
+    =
+    \mathcal L_{\mathrm{agree}}^{\mathcal S}(\tilde s_h^P,D_{\bar\theta}).
+\end{equation}
+因此，若 $\Delta$ 位于噪声子空间并降低 $\Pi_{\mathcal N}$ 能量，则它不会因为 $D_{\bar\theta}$ 保守而被 agreement 项惩罚。
+\end{proposition}
+
+\begin{proof}[证明思路]
+由 $\Pi_{\mathcal S}\Delta=0$ 直接代入式~\eqref{eq:struct-agree-coreC} 即得。该命题形式简单，但工程意义很大：它切断了 常规双反馈设计 中 $D\approx x\Rightarrow P\approx x$ 的全空间 agreement 锁死路径。
+\end{proof}
+
+\subsection{双互反馈增益与局部稳定性}
+
+令 $e_D^{(k)}$ 表示第 $k$ 个 cycle 中 $D$ 相对当前理想目标映射的误差，$e_P^{(k)}$ 表示 target estimator 的 proposal 误差。延迟交替可抽象为
+\begin{equation}
+\label{eq:dual-feedback-recurrence-coreB}
+\begin{bmatrix}
+    e_D^{(k+1)}\\ e_P^{(k+1)}
+\end{bmatrix}
+\le
+\begin{bmatrix}
+    a_D & b_D\\ b_P & a_P
+\end{bmatrix}
+\begin{bmatrix}
+    e_D^{(k)}\\ e_P^{(k)}
+\end{bmatrix}
++
+\begin{bmatrix}
+    \epsilon_D^{(k)}\\ \epsilon_P^{(k)}
+\end{bmatrix},
+\end{equation}
+其中 $b_D$ 表示 P-target 误差传给 D 的反馈增益，$b_P$ 表示 D-EMA 误差传给 P 的反馈增益。
+
+\begin{theorem}[延迟双互反馈的条件稳定性]
+\label{thm:dual-feedback-stability-coreB}
+若矩阵
+\begin{equation}
+    G_{DP}=\begin{bmatrix}a_D & b_D\\ b_P & a_P\end{bmatrix}
+\end{equation}
+满足谱半径 $\rho(G_{DP})<1$，且 $\sum_k(\epsilon_D^{(k)}+\epsilon_P^{(k)})<\infty$，则双互反馈误差序列有界，并收敛到由不可约偏差项决定的邻域。若误差项趋于零，则 $e_D^{(k)},e_P^{(k)}\to0$。
+\end{theorem}
+
+\begin{proof}[证明思路]
+对递推式~\eqref{eq:dual-feedback-recurrence-coreB} 展开。由于 $\rho(G_{DP})<1$，存在矩阵范数使 $\norm{G_{DP}}<1$。于是误差由收缩线性系统与可和扰动控制。该结论不依赖深度网络全局凸性，而依赖反馈增益被 EMA、stop-gradient、$W_h$ 上限、近端项和低学习率共同压低。
+\end{proof}
+
+\begin{remark}[为什么必须延迟而不能即时互监督]
+若 $P_\phi$ 当前输出直接作为 $D_\theta$ 当前目标，同时 $D_\theta$ 当前输出又直接作为 $P_\phi$ 当前监督，则 $b_D,b_P$ 难以控制，$\rho(G_{DP})$ 可能超过 $1$，系统会出现自我确认、振荡或结构性过平滑。EMA、stop-gradient 和 cycle-level 交替的作用就是把即时闭环改成延迟弱反馈。
+\end{remark}
+
+\label{sec:main-results}
+
+\begin{lemma}[卷积残差块 Jacobian 上界]
+\label{lem:residual-block}
+在 A6 成立时，若单个残差块写为
+\begin{equation}
+    u_{\ell+1}=u_\ell+\Gamma_\ell F_\ell(u_\ell),
+\end{equation}
+且 $\norm{J_{F_\ell}}\le K_\ell$、$\norm{\Gamma_\ell}\le\gamma_\ell$，则
+\begin{equation}
+    \norm{J_\ell}\le 1+\gamma_\ell K_\ell.
+\end{equation}
+由 $L$ 个此类块复合得到的网络局部 Lipschitz 常数可由
+\begin{equation}
+    \prod_{\ell=1}^L(1+\gamma_\ell K_\ell)
+\end{equation}
+控制。
+\end{lemma}
+
+\begin{proof}
+由链式法则 $J_\ell=I+\Gamma_\ell J_{F_\ell}(u_\ell)$。取谱范数并使用三角不等式与次可乘性，得到 $\norm{J_\ell}\le1+\gamma_\ell K_\ell$。多层复合的 Jacobian 为各层 Jacobian 乘积，因此整体上界为各单层上界乘积。
+\end{proof}
+
+\begin{proposition}[中心层残差去噪器 Lipschitz 上界]
+\label{prop:denoiser-lip-coreA}
+若 $R_\theta(y,c)=R_0(y)+g_h\odot R_c(y,c)$ 在局部可容许域内为 $L_R$-Lipschitz，且 $D_\theta(y,c)=y-\eta_DR_\theta(y,c)$，则
+\begin{equation}
+    \Lip(D_\theta)\le1+\eta_D L_R.
+\end{equation}
+若进一步通过谱归一化、残差缩放或步长约束使 $\eta_DL_R<1$，则额外扰动和残差泄漏在输出端的放大倍数受控。
+\end{proposition}
+
+\begin{proof}
+对任意 $y,y'$，
+\begin{equation}
+\begin{aligned}
+    \norm{D_\theta(y,c)-D_\theta(y',c)}
+    &\le\norm{y-y'}+\eta_D\norm{R_\theta(y,c)-R_\theta(y',c)}\\
+    &\le(1+\eta_DL_R)\norm{y-y'}.
+\end{aligned}
+\end{equation}
+\end{proof}
+
+\begin{proposition}[低通上下文泄漏导致的输出扰动界]
+\label{prop:context-leak-coreA}
+在 A2 与 A6 成立时，设 $c_h^{\mathrm{lo}}=\Pi_{\mathrm{lo}}c_h$，则上下文高频泄漏对输出的影响满足
+\begin{equation}
+\label{eq:context-output-bound-coreA}
+    \E\norm{D_\theta(x_h,c_h)-D_\theta(x_h,c_h^{\mathrm{lo}})}
+    \le
+    C_{\mathrm{ctx}}\epsilon_{\mathrm{jac}}\epsilon_{\mathrm{ctx}}+o(\epsilon_{\mathrm{ctx}}).
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+固定 $x_h$，对 $D_\theta(x_h,c)$ 关于上下文变量作一阶展开：
+\begin{equation}
+    D_\theta(x_h,c_h)-D_\theta(x_h,c_h^{\mathrm{lo}})
+    =J_{D,c}(x_h,\bar c_h)\Pi_{\mathrm{hi}}c_h+\text{高阶项}.
+\end{equation}
+取范数、期望并使用 A2 中的高频上下文能量界和 Jacobian 敏感性界，即得结论。
+\end{proof}
+
+\begin{proposition}[masked 条件风险的 clean 偏差接口]
+\label{prop:masked-identifiability-coreA}
+在 A5 成立时，平方损失下对 mask block $B_i$ 的 population minimizer 满足
+\begin{equation}
+\label{eq:masked-bayes-coreA}
+    D_i^\star(y_{\Omega\setminus B_i},c_h)
+    =\E[x_i\mid y_{\Omega\setminus B_i},c_h].
+\end{equation}
+进一步有
+\begin{equation}
+\label{eq:masked-clean-bias-coreA}
+    \E\abs{D_i^\star(y_{\Omega\setminus B_i},c_h)-s_i}
+    \le
+    \underbrace{\E\abs{\E[s_i\mid y_{\Omega\setminus B_i},c_h]-s_i}}_{\text{条件结构不可预测偏差}}
+    +\epsilon_{\mathrm{corr}}.
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+平方损失的 population minimizer 是条件均值，故式~\eqref{eq:masked-bayes-coreA} 成立。由 $x_i=s_i+n_i$，
+\begin{equation}
+    \E[x_i\mid y_{\Omega\setminus B_i},c_h]
+    =\E[s_i\mid y_{\Omega\setminus B_i},c_h]
+    +\E[n_i\mid y_{\Omega\setminus B_i},c_h].
+\end{equation}
+A5 控制第二项的条件偏差。加减 $\E[s_i\mid y_{\Omega\setminus B_i},c_h]$ 并使用三角不等式得到式~\eqref{eq:masked-clean-bias-coreA}。
+\end{proof}
+
+\begin{remark}[可识别性结论的边界]
+命题~\ref{prop:masked-identifiability-coreA} 没有声称所有 clean 结构都可恢复。第一项是条件结构不可预测偏差；若中心层存在邻域和上下文无法推断的层特异小病灶，该项不会消失。这正是为什么本文需要微小结构保护实验，而不是只报告平均 PSNR。
+\end{remark}
+
+
+\begin{proposition}[安全主干状态下的训练--推理主体一致性]
+\label{prop:safe-shift-auditA}
+若 $\rho_t=0$，训练输入为 $y_h=x_h+\beta_t\zeta_{\mathrm{safe}}$，且 $\E\norm{\zeta_{\mathrm{safe}}}\le C_{\mathrm{safe}}$，则
+\begin{equation}
+\label{eq:safe-shift-auditA}
+    W_1(\mathcal L(y_h,c_h),\mathcal L(x_h,c_h))
+    \le \beta_t C_{\mathrm{safe}}.
+\end{equation}
+特别地，当 $\beta_t=0$ 时，训练与推理共享同一中心层主体，主体分布偏移仅来自 mask 机制和条件可见域差异。
+\end{proposition}
+
+\begin{proof}
+考虑耦合 $(x_h,c_h)$ 与 $(x_h+\beta_t\zeta_{\mathrm{safe}},c_h)$。由 $W_1$ 定义，
+\begin{equation}
+    W_1\le \E\norm{\beta_t\zeta_{\mathrm{safe}}}\le \beta_tC_{\mathrm{safe}}.
+\end{equation}
+当 $\beta_t=0$ 时该项为零。
+\end{proof}
+
+\begin{proposition}[受审计残差增强的风险摄动界]
+\label{prop:residual-risk-gated-auditA}
+设损失关于输入为 $L_\ell$-Lipschitz，去噪器为 $L_D$-Lipschitz。若 $\rho_t=1$ 且 A3、A4 成立，则实际受审计残差注入相对于理想噪声注入的风险偏差满足
+\begin{equation}
+\label{eq:residual-risk-bound-auditA}
+    \abs{\mathcal R_{\mathrm{act}}-\mathcal R_{\mathrm{id}}}
+    \le
+    L_\ell L_D\alpha_{\max}a_{\max}
+    \left(
+    \epsilon_{\mathrm{cal}}
+    +C_{\mathcal S}\epsilon_{\mathrm{struct}}
+    +C_e\epsilon_{\mathrm{edge}}
+    +C_{\mathrm{lf}}\epsilon_{\mathrm{lf}}
+    +C_{\mathrm{mod}}\epsilon_{\mathrm{mod}}
+    +\epsilon_\mu
+    \right).
+\end{equation}
+若 $\rho_t=0$，则该命题不被调用，残差相关误差项从训练目标中消失。
+\end{proposition}
+
+\begin{proof}
+在 $\rho_t=1$ 时，写 $z_d=\xi_d+q_d$。理想输入使用 $A_h\xi_d$，实际输入使用 $A_h(\xi_d+q_d)$ 并包含归一化误差、调制图泄漏、边缘结构相关性与低频结构残留。损失和去噪器的 Lipschitz 性给出
+\begin{equation}
+    \abs{\ell(D_\theta(x+\alpha A z_d,c),x)-\ell(D_\theta(x+\alpha A\xi,c),x)}
+    \le L_\ell L_D\alpha\norm{A(z_d-\xi)}.
+\end{equation}
+结构泄漏由 $\epsilon_{\mathrm{struct}}$ 控制，边缘相关和低频泄漏由 $\epsilon_{\mathrm{edge}}$ 与 $\epsilon_{\mathrm{lf}}$ 控制，噪声分布不匹配由 $\epsilon_{\mathrm{cal}}$ 控制，调制图泄漏与均值估计误差给出后两项。取期望并合并常数得到结论。$\rho_t=0$ 时无 $z_d$ 注入，故残差风险摄动界没有适用对象。
+\end{proof}
+
+\begin{proposition}[门控训练输入的统一偏移界]
+\label{prop:gated-shift-auditA}
+若 $\E\norm{A_hz_d}\le C_z$，$\E\norm{\zeta_{\mathrm{safe}}}\le C_{\mathrm{safe}}$，则统一输入式~\eqref{eq:yc-gated-auditA} 满足
+\begin{equation}
+\label{eq:gated-shift-bound-auditA}
+    W_1(\mathcal L(y_h,c_h),\mathcal L(x_h,c_h))
+    \le
+    \rho_t\alpha_t C_z+(1-\rho_t)\beta_tC_{\mathrm{safe}}.
+\end{equation}
+因此训练--推理偏移由控制器状态、注入强度和扰动尺度显式控制，而不会引入由 pseudo-clean 主体生成造成的额外偏移。
+\end{proposition}
+
+\begin{proof}
+取自然耦合 $(x_h,c_h)$ 与 $(x_h+\rho_t\alpha_tA_hz_d+(1-\rho_t)\beta_t\zeta_{\mathrm{safe}},c_h)$，由三角不等式和 $W_1$ 定义即可。
+\end{proof}
+
+\begin{proposition}[闭环误差界与可调稳定条件]
+\label{prop:closed-loop-coreA}
+若 A9 成立并满足式~\eqref{eq:gain-condition-coreA}，则
+\begin{equation}
+\label{eq:closed-loop-R-coreA}
+    e_R\le\frac{B_R+C_AB_D}{1-C_AC_R},
+\end{equation}
+\begin{equation}
+\label{eq:closed-loop-D-coreA}
+    e_D\le B_D+C_R\frac{B_R+C_AB_D}{1-C_AC_R}.
+\end{equation}
+其中 $C_A,C_R$ 可通过降低注入强度、降低网络 Lipschitz、增大近端强度和加强残差审计来减小。
+\end{proposition}
+
+\begin{proof}
+由 A9，$e_R\le B_R+C_Ae_D$ 且 $e_D\le B_D+C_Re_R$。代入得到
+\begin{equation}
+    e_R\le B_R+C_AB_D+C_AC_Re_R.
+\end{equation}
+当 $C_AC_R<1$ 时移项得到式~\eqref{eq:closed-loop-R-coreA}，再代回得到式~\eqref{eq:closed-loop-D-coreA}。式~\eqref{eq:gain-condition-coreA} 是 $C_AC_R<1$ 的可调充分条件。
+\end{proof}
+
+\begin{theorem}[近端块级交替的局部 stationary 收敛]
+\label{thm:stationary-coreA}
+在 A1--A11 成立、迭代保持在局部可容许紧集内时，若 Lyapunov 下降条件~\eqref{eq:lyapunov-descent-coreA}、目标漂移可求和条件~\eqref{eq:drift-summable-coreA} 和随机优化误差可求和同时成立，则
+\begin{equation}
+\label{eq:square-summable-coreA}
+    \sum_{k=0}^\infty
+    \left(
+    \norm{D_{\theta_{k+1}}-D_{\theta_k}}_{\mathcal X}^2
+    +\norm{P_{\phi_{k+1}}-P_{\phi_k}}_{\mathcal I}^2
+    \right)<\infty.
+\end{equation}
+若每个 block 目标在局部满足 Kurdyka--\L{}ojasiewicz 性质或等价的近端梯度误差界，则
+\begin{equation}
+\label{eq:stationary-coreA}
+    \liminf_{k\to\infty}\norm{\nabla \Phi_k(\theta_k,\phi_k)}=0,
+\end{equation}
+并且极限点属于局部 stationary set。该结论不保证唯一参数收敛，也不保证全局最优。
+\end{theorem}
+
+\begin{proof}
+对式~\eqref{eq:lyapunov-descent-coreA} 从 $k=0$ 到 $K$ 求和，得到
+\begin{equation}
+\begin{aligned}
+&c_D\sum_{k=0}^K\norm{D_{\theta_{k+1}}-D_{\theta_k}}_{\mathcal X}^2
++c_P\sum_{k=0}^K\norm{P_{\phi_{k+1}}-P_{\phi_k}}_{\mathcal I}^2\\
+&\le \Phi_0-\Phi_{K+1}+\sum_{k=0}^K\varepsilon_k.
+\end{aligned}
+\end{equation}
+由于 $\Phi_k$ 下有界且 $\sum_k\varepsilon_k<\infty$，令 $K\to\infty$ 得到平方可和性。目标漂移可求和保证相邻构造分布变化不会破坏近端下降。若进一步满足 KL 性质或近端梯度误差界，则标准非凸近端块坐标下降论证给出极限点的一阶 stationary 性。深度网络存在缩放、置换和冗余参数化，因此结论只针对局部 stationary set，而非唯一权重向量。
+\end{proof}
+
+\begin{corollary}[本文 总体误差接口]
+\label{cor:overall-coreA}
+在上述条件成立时，实际推理输出的 clean 偏差可写成
+\begin{equation}
+\label{eq:overall-error-coreA}
+\begin{aligned}
+    \E\norm{D_{\theta}(x_h,c_h)-s_h}
+    \le&\
+    \underbrace{\epsilon_{\mathrm{cond}}}_{\text{masked 条件结构不可预测偏差}}
+    +\underbrace{\epsilon_{\mathrm{corr}}}_{\text{CT 噪声相关偏差}}
+    +\epsilon_\rho
+    +C_{\mathrm{cal}}\epsilon_{\mathrm{cal}}\\
+    &+C_{\mathrm{struct}}\epsilon_{\mathrm{struct}}
+    +C_{\mathrm{mod}}\epsilon_{\mathrm{mod}}
+    +C_{\mathrm{ctx}}(\epsilon_{\mathrm{ctx}}\epsilon_{\mathrm{jac}})
+    +C_{\mathrm{shift}}\epsilon_{\mathrm{shift}}\\
+    &+C_z\left(\epsilon_{\mathrm{reg}}+c_0\kappa_{\mathrm{eff}}\Delta z^2+\E\norm{\cH_\tau\ell_h}\right)
+    +\epsilon_{\mathrm{opt}}+\epsilon_{\mathrm{ema}}.
+\end{aligned}
+\end{equation}
+\end{corollary}
+
+\begin{proof}
+命题~\ref{prop:masked-identifiability-coreA} 给出 masked 条件 clean 偏差和噪声相关偏差；命题~\ref{prop:residual-risk-gated-auditA} 给出外生残差标定、结构泄漏和调制图泄漏导致的风险摄动；命题~\ref{prop:context-leak-coreA} 控制上下文高频泄漏；命题~\ref{prop:gated-shift-auditA} 控制训练--推理输入偏移；A1 给出轴向对齐误差和层特异结构项；定理~\ref{thm:stationary-coreA} 将有限优化误差写入 $\epsilon_{\mathrm{opt}}$。合并这些项得到总体接口。
+\end{proof}
+
+\begin{remark}[如何解读总体误差界]
+式~\eqref{eq:overall-error-coreA} 不是为了给出一个很小的数值上界，而是为了把系统的失败来源拆开：如果小病灶被抹除，应检查 $\epsilon_{\mathrm{cond}}$、$\E\norm{\cH_\tau\ell_h}$ 和微小结构保护项；如果输出过平滑，应检查 $\epsilon_{\mathrm{shift}}$、$\alpha_t$ 和低频一致性；如果模型复制邻层纹理，应检查 $\epsilon_{\mathrm{ctx}}$、$\epsilon_{\mathrm{jac}}$ 和 $g_h$；如果残差注入造成伪影，应检查 $\epsilon_{\mathrm{struct}}$ 和 $\epsilon_{\mathrm{cal}}$。该接口的理论价值在于把潜在失败模式写成可审计偏差项。
+\end{remark}
+
+\subsection{层厚与伪影尺度量化}
+\label{sec:thickness-artifact}
+
+上述误差界中的 $\Delta z^2$ 项只描述相邻切片中心间距导致的二阶插值误差。真实 CT 中还存在由层厚、重建层敏感曲线和部分容积效应引入的轴向低通偏差。为将该因素显式量化，令连续 clean 体函数为 $f(z)\in\R^m$，重建层厚为 $t$，轴向 slice-sensitivity profile 为对称核 $k_t$，满足
+\begin{equation}
+    \int k_t(u)\,du=1,\qquad
+    \int u k_t(u)\,du=0,\qquad
+    \nu_t^2:=\int u^2 k_t(u)\,du<\infty .
+\end{equation}
+观测到的第 $h$ 层 clean 结构可写为
+\begin{equation}
+\label{eq:thick-slice-model}
+    s_h^{(t)}=(k_t*f)(z_h),
+\end{equation}
+其中 $\nu_t$ 是层厚的有效轴向尺度。若 $k_t$ 是宽度为 $t$ 的 box kernel，则 $\nu_t^2=t^2/12$；若 $k_t$ 近似高斯，则 $\nu_t$ 是高斯标准差。实际协议中 nominal slice thickness、slice spacing 与重建核共同决定 $\nu_t$，因此应优先从 DICOM 元数据和重建说明估计有效层厚，而不是只使用名义层厚。
+
+\begin{assumption}[(A12) 轴向二阶有界与层厚核正则性]
+在局部解剖区域内，连续 clean 体函数满足
+\begin{equation}
+    \sup_z\norm{\partial_{zz}f(z)}\le M_2.
+\end{equation}
+层厚核 $k_t$ 对称、归一化且二阶矩为 $\nu_t^2$。相邻层中心间距为 $d$，即 $z_{h\pm1}=z_h\pm d$。
+\end{assumption}
+
+\begin{remark}[A12 深度剖析]
+\textbf{1. 符号说明}：
+\begin{itemize}[leftmargin=2em]
+    \item $f(z) \in \mathbb{R}^m$：表示连续的三维干净体数据函数沿轴向的分布。
+    \item $M_2 \in \mathbb{R}$：干净体数据在轴向的二阶偏导数范数的上确界。
+    \item $k_t(u)$：三维 CT 成像重建中的轴向层厚敏感度曲线（Slice Sensitivity Profile, SSP）。
+    \item $\nu_t \in \mathbb{R}$：层厚核的有效轴向标准差，用于表征由于探测器孔径和重建插值带来的轴向低通平滑效应。
+    \item $d \in \mathbb{R}$：重建切片在三维空间中的物理中心间距。
+\end{itemize}
+
+\textbf{2. 提出依据}：
+在真实 CT 扫描仪中，由于 X 射线球管的物理几何尺寸、探测器的排数宽度以及重建插值算法，输出的每一张切片都不能看作数学上的无穷薄截面。相反，它是在轴向方向上对人体真实三维密度分布 $f(z)$ 进行了以 $k_t$ 为核的加性积分。因此，通过引入有效层厚尺度 $\nu_t$ 和轴向二阶导数界 $M_2$，我们能够从 CT 成像物理学出发，显式推导并定量分析由于部分容积效应（Partial Volume Effect）以及相邻厚切片插值所带来的混合轴向解剖结构失配误差。
+
+\textbf{3. 合理性与失效分析}：
+\begin{itemize}[leftmargin=2em]
+    \item \emph{合理性}：正常人体组织在宏观上是连续且光滑分布的，其轴向的密度二阶变化率 $M_2$ 在绝大部分器官实质内是有界的。对称和归一化则是成像系统的基本物理属性（即积分灵敏度为 1 且具有轴向对称性）。
+    \item \emph{失效分析}：如果扫描切片中包含极其高密度的金属人工假体（如金属骨钉、牙科充填物），其物理边界处的衰减系数跃变在数学上趋近于 Dirac $\delta$ 分布的导数，导致 $M_2 \to \infty$。此时部分容积效应极其剧烈，轴向二阶展开的高阶项不再能被忽略，会出现由于金属伪影和层厚效应混合诱导的“条纹状”或“错层”结构，导致该假设物理失效。
+\end{itemize}
+\end{remark}
+
+\begin{proposition}[层厚诱导的结构误差尺度]
+\label{prop:thickness-scale}
+在 A12 成立时，厚层观测相对中心薄层目标的部分容积偏差满足
+\begin{equation}
+\label{eq:partial-volume-bound}
+    \norm{s_h^{(t)}-f(z_h)}
+    \le
+    \frac{M_2}{2}\nu_t^2+o(\nu_t^2).
+\end{equation}
+由相邻厚层平均预测中心厚层结构的二阶插值误差满足
+\begin{equation}
+\label{eq:thickness-interp-bound}
+    \left\|
+    s_h^{(t)}-\frac{s_{h-1}^{(t)}+s_{h+1}^{(t)}}{2}
+    \right\|
+    \le
+    \frac{M_2}{2}d^2+o(d^2).
+\end{equation}
+因此，在将厚层观测用于近似薄层中心结构时，可用有效轴向尺度
+\begin{equation}
+\label{eq:effective-z-scale}
+    \Lambda_z^2:=d^2+\nu_t^2
+\end{equation}
+量化结构失配的一阶主导上界：
+\begin{equation}
+\label{eq:thickness-total-bound}
+    E_{\mathrm{z}}(t,d)
+    :=
+    \E\norm{\text{轴向结构失配}}
+    \lesssim
+    C_z M_2(d^2+\nu_t^2)+E_{\mathrm{sing}},
+\end{equation}
+其中 $C_z$ 为与核形状和范数选择有关的常数，$E_{\mathrm{sing}}$ 吸收非二阶光滑结构、金属高频边界、运动错层和其他非光滑伪影。
+\end{proposition}
+
+\begin{proof}
+对 $f(z_h-u)$ 在 $z_h$ 处作二阶 Taylor 展开。由于 $k_t$ 归一化且一阶矩为零，一阶项消失，二阶项由 $\nu_t^2$ 和 $\sup_z\norm{\partial_{zz}f(z)}$ 控制，得到式 \eqref{eq:partial-volume-bound}。对 $g_t(z)=(k_t*f)(z)$ 使用同样的二阶中心差分展开：
+\begin{equation}
+    g_t(z_h)-\frac{g_t(z_h-d)+g_t(z_h+d)}{2}
+    =
+    -\frac{d^2}{2}\partial_{zz}g_t(\tilde z)
+\end{equation}
+并利用 $\norm{\partial_{zz}g_t}\le \norm{k_t}_1\sup_z\norm{\partial_{zz}f(z)}=M_2$，得到式 \eqref{eq:thickness-interp-bound}。两类轴向偏差相加并将非光滑项单独记为 $E_{\mathrm{sing}}$，得到式 \eqref{eq:thickness-total-bound}。
+\end{proof}
+
+\begin{corollary}[层厚变化的误差变化关系]
+\label{cor:thickness-delta}
+若两个协议仅在层厚核和层间距上不同，且共享相同的局部曲率上界 $M_2$、重建核族和噪声标定条件，则其轴向结构失配上界差满足
+\begin{equation}
+\label{eq:thickness-error-delta}
+    \abs{
+    E_{\mathrm{z}}(t_2,d_2)-E_{\mathrm{z}}(t_1,d_1)
+    }
+    \lesssim
+    C_zM_2\abs{(d_2^2+\nu_{t_2}^2)-(d_1^2+\nu_{t_1}^2)}
+    +\abs{E_{\mathrm{sing},2}-E_{\mathrm{sing},1}}.
+\end{equation}
+当 $d$ 与 $t$ 成比例且 $k_t$ 为同族缩放核时，主导项为 $O(t^2)$；例如 box kernel 且 $d=t$ 时，$\Lambda_z^2=t^2+t^2/12=13t^2/12$。因此理论上可以证明“可光滑解释的层厚相关误差上界随有效层厚平方增长”，但不能在没有额外成像模型和解剖频谱假设时证明真实伪影强度与层厚之间存在精确等式关系。
+\end{corollary}
+
+\begin{remark}[相关性证明与可检验量]
+为了把命题 \ref{prop:thickness-scale} 转成实验中的相关性声明，可定义层厚伪影指数
+\begin{equation}
+\label{eq:thickness-artifact-index}
+    A_z(t,d)
+    :=
+    \E\left[
+    \norm{\Pi_{\mathrm{art}}\hat r_h}^2
+    \mid t,d
+    \right],
+\end{equation}
+其中 $\Pi_{\mathrm{art}}$ 可取轴向方向性条纹/部分容积频带投影、厚层边界残差投影，或由薄层重采样参考定义的误差投影。若 $\Pi_{\mathrm{art}}$ 对二阶轴向失配有非零响应，且噪声、剂量和重建核在分层后近似同质，则
+\begin{equation}
+\label{eq:artifact-regression}
+    A_z(t,d)
+    =
+    \beta_0+\beta_1(d^2+\nu_t^2)+\varepsilon,
+    \qquad
+    \beta_1>0
+\end{equation}
+是由上述上界诱导的可检验一阶模型。这里的 $\beta_1>0$ 不是无条件数学必然，而是需要在固定解剖部位、重建核、剂量和噪声统计后通过分层回归、置换检验或混合效应模型验证。若重建算法随层厚同步改变，或厚层显著降低随机噪声，$A_z$ 可能同时受到伪影增加与噪声降低两种效应影响，此时应报告偏相关而非简单相关。
+\end{remark}
+
+\subsection{假设参数耦合与误差传递关联性分析}
+\label{sec:parameter-coupling}
+
+稳定双反馈模型的整体收敛性与去噪质量并非取决于单一参数的优化，而是依赖于各假设参数之间的精妙平衡与乘性传导。本节系统剖析这些理论参数之间的深层耦合与误差传播网络（如图~\ref{fig:parameter-coupling} 所示）。
+
+\begin{figure}[htbp]
+\centering
+\small
+\begin{tabular}{ccccc}
+层厚与层距 ($d, \nu_t, \kappa$) & $\longrightarrow$ & 残差泄漏误差 ($\Delta_h$) & $\longrightarrow$ & 实际 N2N 去噪偏差 \\
+$\downarrow$ & & $\downarrow$ & & $\downarrow$ \\
+邻层噪声传导 ($L_P n_{\pm1}$) & & 反馈增益 ($C_A, C_R$) & & 风险摄动界 ($\mathcal{R}_{\mathrm{act}}$) \\
+\end{tabular}
+\caption{假设参数之间的耦合与误差传播路径图。}
+\label{fig:parameter-coupling}
+\end{figure}
+
+具体而言，参数之间的耦合关系主要体现在以下四个核心维度：
+
+\subsubsection{轴向尺度与结构失配的传递}
+在 A1 与 A12 中，层间距 $d$、有效层厚尺度 $\nu_t$、主体结构最大轴向曲率 $M_2$ 以及曲率常数 $\kappa$ 直接决定了插值误差和部分容积失配。这些物理成像参数是预测器输入失配的根源。在推论~\ref{cor:overall-coreA} 中，这一结构失配作为 $\epsilon_{\mathrm{reg}}+c_0\kappa_{\mathrm{eff}}\Delta z^2$ 项进入总体误差接口；在 Proposition~\ref{prop:thickness-scale} 中，它又可由 $C_z M_2(d^2 + \nu_t^2)$ 形式的层厚--曲率尺度进一步量化。这说明轴向结构失配会直接推高条件结构不可预测偏差和残差结构泄漏风险。这意味着：
+\begin{equation}
+    (d, \nu_t) \text{ 增大} \Longrightarrow \text{插值结构失配增大} \Longrightarrow \E\norm{\Delta_h} \text{ 增大}.
+\end{equation}
+
+\subsubsection{残差泄漏对去噪偏差与风险摄动的放大效应}
+高通残差泄漏 $\Delta_h$ 并不是一个孤立的预测误差，它会作为“伪噪声注入信号”直接污染去噪器的训练集。在命题~\ref{prop:residual-risk-gated-auditA} 中，结构泄漏误差经注入系数 $\alpha_{\max} a_{\max}$ 和去噪器 Lipschitz 常数放大，直接增加实际注入分布相对理想噪声分布的风险摄动。
+进而在推论~\ref{cor:overall-coreA} 的总体误差接口中，该偏差通过 $C_{\mathrm{struct}}\epsilon_{\mathrm{struct}}$ 和 $C_{\mathrm{cal}}\epsilon_{\mathrm{cal}}$ 两类项放大为推理输出相对干净结构的偏差。这构成了一条清晰的误差污染传导链：
+\begin{equation}
+    \E\norm{\Delta_h} \text{ 增大} \stackrel{\alpha_{\max}a_{\max}}{\longrightarrow} W_1\text{ 偏差增大} \stackrel{C_{\mathrm{dist}}}{\longrightarrow} \text{推理去噪偏差 } \E\norm{D^\star_{\mathrm{act}}(x)-s} \text{ 增大}.
+\end{equation}
+
+\subsubsection{网络 Lipschitz 常数与噪声放大的乘性级联}
+结构预测器 Lipschitz 常数 $L_P$（来自 A5）和去噪器 Lipschitz 常数 $L_D$（来自 A6）是系统稳定性的核心放大器：
+\begin{itemize}[leftmargin=2em]
+    \item $L_P$ 决定了输入端邻层高频随机噪声 $n_{h-1}, n_{h+1}$ 传播到残差池中的比例。若 $L_P$ 未受约束，即使干净图像满足完美的二阶光滑，含噪输入的扰动也会通过 $L_P\E(\norm{n_{h-1}}+\norm{n_{h+1}})$ 使得残差池严重噪化。
+    \item $L_D$ 作为去噪器输出端的稳定性度量，与损失函数的 Lipschitz 常数 $L_\ell$ 相乘后，作为前置系数决定了风险摄动界（式~\eqref{eq:residual-risk-bound-auditA}）。这说明去噪网络对输入的任何不稳定响应都会被损失函数乘性放大，危及训练平稳性。
+\end{itemize}
+
+\subsubsection{反馈耦合增益的闭环压缩约束}
+在 A9 中，双反馈环能够收敛的关键是乘积 $C_A C_R < 1$。这两个反馈增益系数与底层的网络及优化参数高度耦合：
+\begin{itemize}[leftmargin=2em]
+    \item 增益 $C_A$（去噪锚点误差向结构预测残差的传递系数）取决于结构预测器 $P_\phi$ 对锚点 $\bar x_h$ 的过拟合程度。若预测器过于敏感（$L_P$ 大且缺少 $\cL_P$ 中的低频低通限制），或者残差质量门控失效（$\epsilon_{\mathrm{gate}}$ 大），则锚点偏差会以极高比例泄漏进残差池，导致 $C_A$ 变大。
+    \item 增益 $C_R$（残差误差向去噪锚点误差的传递系数）则由 noisier-to-noisy 注入强度 $\alpha_{\max}$、去噪器残差形式缩放 $\eta_D$、去噪网络局部 Lipschitz 常数 $L_D$ 共同决定。在最坏情况下，通过一阶泰勒近似可导出：
+    \begin{equation}
+        C_R \le \mathcal{O}(\alpha_{\max} \eta_D L_D).
+    \end{equation}
+\end{itemize}
+因此，为了保证闭环压缩条件 $C_AC_R < 1$ 成立，在工程实践上必须通过以下耦合控制手段：
+\begin{equation}
+\begin{aligned}
+    \text{控制 } \alpha_{\max} \text{ 与 } \eta_D \text{ 极小} 
+    &\Longrightarrow \text{强行压低 } C_R \\
+    &\Longrightarrow \text{容忍合理的预测器失配 } C_A \\
+    &\Longrightarrow \text{保证整体双反馈收敛}.
+\end{aligned}
+\end{equation}
+若盲目增大注入强度 $\alpha_{\max}$ 以求加快去噪速度，会导致 $C_R$ 飙升，进而打破压缩不等式，使双反馈环陷入“解剖结构流失-残差结构化-去噪器退化”的恶性循环。
+
+\section{可执行默认配置}
+
+\subsection{推荐训练预算与刷新频率}
+
+在没有额外验证集先验时，可采用以下默认训练预算。Stage 0 去噪器预热占总预算 $5\%$--$15\%$；Stage 1 结构预测器冻结单训占 $10\%$--$20\%$；Stage 3 近端交替共精化占 $60\%$--$80\%$；Stage 4 弱联合微调不超过 $5\%$。每个交替 cycle 中建议 $P$ 步更新 $0.5$--$1$ epoch，$D$ 步更新 $3$--$5$ epochs。残差池不必每个 epoch 全量刷新，可每 $2$--$5$ 个 cycle 根据门控通过率和 $W_1$ 标定误差局部刷新。
+
+若观察到训练损失下降但验证噪声谱不匹配，应优先降低 $\alpha_t$ 或增大 $K_{\mathrm{block}}$ 的尺度；若观察到小病灶被抹除，应减小结构区域的去噪强度、提高上下文不确定性门控阈值，并增加选择性结构保护；若交替训练出现振荡，应增大 $\gamma_D,\gamma_P$ 或提高 EMA 衰减系数。若观察到 $D_\theta(x_h,c_h)\approx x_h$、$D-HR$ 仍含大量高频残差、masked loss 很低而视觉去噪保守，则不能简单延长训练，应优先检查 $M_h$ 的有效性、$\beta_t$ 的安全扰动强度、$\rho_t$ 的 soft ramp、train--infer shift、$g_h^{\mathrm{ctx}}$ 是否塌缩以及 $\lambda_h^{\mathrm{den}}$ 是否接近零。
+
+\subsection{under-denoising 诊断与参数联动}
+
+若训练中出现“loss 下降但去噪不明显”的现象，本文将其视为训练状态与架构控制共同导致的保守解，而不是单纯训练不足。推荐记录以下量：
+\begin{align}
+    &\rho_t,\quad H_t,\quad \pi_{\mathrm{pass}},\quad \mathcal E_{\mathrm{acc}},\quad S_t,\\
+    &\Std(x_h-D_\theta(x_h,c_h)),\quad \rho_{\mathrm{den}},\quad
+    \E[g_h^{\mathrm{ctx}}\mid\Omega_{\mathrm{anatomy}}],\quad
+    \E[\lambda_h^{\mathrm{den}}\mid\Omega_{\mathrm{hom}}].
+\end{align}
+若 $\rho_t\approx1$ 但 $S_t$ 仍很大，说明残差注入造成的训练--推理偏移过强，应降低 $\alpha_t$ 或将 $\rho_t$ 拉回 soft warmup。若 $\pi_{\mathrm{pass}}$ 很低但 $\rho_t$ 长期为一，说明 controller 放行条件过松，应提高 $\pi_{\min}$、$N_{\min}$ 或 accepted-pool 高分位数约束。若 $g_h^{\mathrm{ctx}}$ 在 anatomy 内接近零，说明上下文门控塌缩，应削弱稀疏化、改用 alignment prior，并加入 homogeneous region 防塌缩下界。若 $\lambda_h^{\mathrm{den}}$ 在 homogeneous region 接近零，说明去噪强度控制器过保守，应提高其下界或增强式~\eqref{eq:L-strength-auditC} 的 under-denoising 惩罚。
+
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{p{0.28\linewidth}p{0.30\linewidth}p{0.32\linewidth}}
+\toprule
+模块 & 默认实现 & 稳定性作用 \\
+\midrule
+结构预测器 $P_\phi$ & 3--5 层浅层 U-Net 或残差 CNN & 降低表达复杂度，减少锚点反馈放大。 \\
+去噪器 $D_\theta$ & $D_\theta(x)=x-\eta_DR_\theta(x)$，小型 DnCNN/U-Net & 让网络学习残差，便于动态范围控制。 \\
+残差注入 & 标量注入，$0.02\le\alpha_t\le0.15$ & 保留降噪压力，避免恒等映射。 \\
+残差统计 & EMA 均值与方差，$a_t\le a_{\max}$ & 控制条件均值漂移与强度爆炸。 \\
+质量门控 & 固定 $q_{\mathrm{low}},q_{\mathrm{corr}}$ 阈值 & 抑制低频结构泄漏。 \\
+结构保护 & $\omega_i(x_h)\in[0,1]$，默认可取全 $1$ & 降低疑似微小结构区域的去噪梯度压力。 \\
+EMA anchor & $\rho_{\mathrm{ema}}\in[0.99,0.999]$ & 平滑结构反馈，降低 loss 震荡。 \\
+联合训练 & $D$ 每步更新，$P$ 每 $5$--$10$ 步更新一次 & 近似两时间尺度。 \\
+\bottomrule
+\end{tabular}
+\caption{稳定双反馈架构的可执行默认配置。}
+\label{tab:default-config}
+\end{table}
+
+
+
+\section{设计取舍、审稿风险与消融实验映射}
+\label{sec:design-audit}
+
+本节讨论当前方案的设计取舍。TRACE-CT 将问题拆成三个可审计子问题：中心层去噪、低通邻层上下文和外生残差注入。该拆分使每个约束都对应明确的实证验证指标，因此需要在实验设计中显式展开。
+
+\subsection{三通道输入的价值应保留为上下文价值}
+
+三切片堆叠输入的优势来自轴向局部相关性。对于薄层 CT，若体素间距较小且无明显运动，$x_{h-1}$ 与 $x_{h+1}$ 可以帮助判断 $x_h$ 中的局部波动是连续解剖结构还是独立随机噪声。这一事实不能被忽略。因此本文不是简单主张“单切片优于三切片”，而是主张：
+\begin{equation}
+    \text{三切片信息应该进入条件变量 }c_h,
+    \qquad
+    \text{而不应该扩展去噪监督目标。}
+\end{equation}
+换言之，三通道的物理价值在于提供宏观解剖域、器官位置、粗尺度密度变化和对齐置信度，而不是提供可复制的高频纹理答案。
+
+该观点对应一个清晰的架构分解：
+\begin{equation}
+\begin{aligned}
+    x_h &\longrightarrow \text{中心层 residual denoising branch},\\
+    (x_{h-1},x_{h+1}) &\longrightarrow \text{low-pass deformable context branch},\\
+    z_d &\longrightarrow \text{cross-volume exogenous noise branch}.
+\end{aligned}
+\end{equation}
+三条路径在前向计算中可以交互，但在理论解释中不能混淆。若三者混在同一个 $X_h\in\R^{3m}$ 中，审稿人很容易质疑模型到底在去噪、插值还是利用滑窗重叠进行自编码。
+
+\subsection{三通道输出的理论成本}
+
+三通道输出 $D_\theta:\R^{3m}\to\R^{3m}$ 会导致三个额外理论成本。
+
+第一，训练--推理偏移从中心层条件分布变成三切片联合分布。前者只需要估计
+\begin{equation}
+    W_1(\mathcal L(y_h,c_h),\mathcal L(x_h,c_h)),
+\end{equation}
+后者则要求估计
+\begin{equation}
+    W_1(\mathcal L(Y_h),\mathcal L(X_h)),
+    \qquad
+    Y_h,X_h\in\R^{3m}.
+\end{equation}
+联合分布中包含轴向相关噪声、滑窗依赖、形变误差和层间解剖突变，其标定难度明显更高。
+
+第二，残差泄漏从单层泄漏变成向量泄漏。中心层模型只需控制
+\begin{equation}
+    \Delta_h=\cH_\tau(x_h-P_\phi(U_h))-\cH_\tau n_h.
+\end{equation}
+三通道输出模型则需要控制
+\begin{equation}
+    \Delta_H=[\Delta_{h-1},\Delta_h,\Delta_{h+1}]^\top,
+\end{equation}
+以及交叉协方差
+\begin{equation}
+    \Cov(\Delta_{h-1},\Delta_h),
+    \quad
+    \Cov(\Delta_h,\Delta_{h+1}),
+    \quad
+    \Cov(\Delta_{h-1},\Delta_{h+1}).
+\end{equation}
+这些协方差项恰好可能包含轴向连续的结构残留，而非纯噪声。
+
+第三，三通道输出使目标泄漏的角色变得不唯一。同一中心切片在不同滑窗中可能既是目标又是上下文。如果网络容量足够大，它可以学习到与采样窗口位置相关的隐式复制策略。该问题在完全监督训练中通常不是致命问题，但在自监督伪输入构造中会破坏可识别性。
+
+\subsection{中心层条件模型的理论收益}
+
+本文的核心收益不是简单减少通道数，而是将主要误差项变成可分别估计的形式：
+\begin{equation}
+\begin{aligned}
+    \epsilon_{\mathrm{shift}} &: \text{中心层训练--推理偏移},\\
+    \epsilon_{\mathrm{ctx}} &: \text{邻层上下文高频泄漏},\\
+    \epsilon_{\mathrm{jac}} &: \text{去噪器对上下文高频的敏感性},\\
+    \epsilon_{\mathrm{cal}} &: \text{外生残差噪声标定误差},\\
+    \epsilon_{\mathrm{reg}} &: \text{形变对齐误差},\\
+    \epsilon_{\mathrm{prox}} &: \text{近端交替漂移误差}.
+\end{aligned}
+\end{equation}
+这些量都可以设计独立消融实验，而不是隐藏在一个难以解释的三通道联合误差中。
+
+\subsection{训练节奏的审稿风险与防御逻辑}
+
+端到端联合训练的常见吸引力在于实现简单且损失下降快。但在本文框架中，损失下降本身不是充分证据。若 $P_\phi$ 和 $D_\theta$ 联合反传，系统可能优化出如下隐式路径：
+\begin{equation}
+    P_\phi(U_h) \approx \operatorname{Code}(x_h),
+    \qquad
+    D_\theta(P_\phi(U_h)+\alpha A_hz_d,c_h)\approx x_h.
+\end{equation}
+这种路径在训练集上可以表现很好，却不具有外生噪声去噪解释。Reviewer 可以据此质疑：模型只是学到了一个伪输入生成--解码系统，而不是自监督去噪器。
+
+完全单独训练的风险则相反：理论上更干净，但方法贡献变弱。若 $D_\theta$ 与 $P_\phi$ 之间没有后续共精化，则框架退化为“先估计结构、再做一次 noisier-to-noisy 去噪”的串行流程，不能体现 TRACE-CT 的闭环改进机制。因此本文采用中间方案：近端块级交替。
+
+该方案的理论防御逻辑是：
+\begin{equation}
+\begin{aligned}
+    \text{stop-gradient} &\Rightarrow \text{切断伪输入编码捷径},\\
+    \text{EMA teacher} &\Rightarrow \text{降低相邻 cycle 的输入分布抖动},\\
+    \text{proximal penalty} &\Rightarrow \text{约束算子空间漂移},\\
+    \text{cycle-level alternation} &\Rightarrow \text{使每个子问题近似静态},\\
+    \text{residual audit} &\Rightarrow \text{防止残差池被结构污染}.
+\end{aligned}
+\end{equation}
+这六个设计共同支撑 A10 的移动 PL 和扰动吸引假设。
+
+\subsection{推荐消融实验矩阵}
+
+为了验证当前方案的每个结构约束，应至少设计以下六组消融。
+
+\paragraph{消融一：三通道联合输出 vs. 中心层条件输出。}
+比较
+\begin{equation}
+    D_\theta:\R^{3m}\to\R^{3m}
+    \quad \text{与} \quad
+    D_\theta:\R^m\times\R^r\to\R^m.
+\end{equation}
+指标不应只看 PSNR/SSIM，还应包括小病灶保持率、边缘一致性、噪声功率谱和训练--推理偏移估计。
+
+\paragraph{消融二：完整邻层上下文 vs. 低通邻层上下文。}
+比较直接输入 $x_{h\pm1}$ 与输入 $\Pi_{\mathrm{lo}}\mathcal W_{h\pm1\to h}x_{h\pm1}$。若低通上下文 PSNR 略低但病灶保持和泛化更好，则说明切断高频上下文是合理取舍。
+
+\paragraph{消融三：无门控上下文 vs. 可靠性门控上下文。}
+去掉 $g_h$ 后，重点观察肺底、颅底、金属伪影附近、厚层错位区域和模拟病灶区域的过平滑程度。若无门控模型在这些区域出现结构抹除，则支持 A2 和 A5。
+
+\paragraph{消融四：端到端联合训练 vs. 近端块级交替训练。}
+比较训练损失曲线、验证噪声谱、残差池边缘相关性和交替 cycle 间输出漂移。训练--推理分布偏移用下式单独报告：
+\begin{equation}
+    W_1\big(\mathcal L(y_h,c_h),\mathcal L(x_h,c_h)\big).
+\end{equation}
+若端到端联合训练损失更低但分布偏移更大，则说明其低损失来自捷径而非更好去噪。
+
+\paragraph{消融五：无近端项 vs. 近端项。}
+去掉 $\gamma_D$ 与 $\gamma_P$，观察 cycle 间的
+\begin{equation}
+    d_F(D^{(k+1)},D^{(k)}),
+    \qquad
+    d_F(P^{(k+1)},P^{(k)}),
+\end{equation}
+以及 $y_h^{(k)}$ 分布漂移。若出现振荡或残差池质量周期性恶化，则支持近端项的必要性。
+
+\paragraph{消融六：跨体积外生残差 vs. 同体积自残差。}
+比较从 donor 体数据采样的外生残差 $z_d$ 与从 recipient 同一体数据但错开若干层采样的自残差 $z_{c\pm q}$。后者虽然可能在扫描协议和剂量统计上更接近受体，但它携带隐式解剖同源性和轴向结构连续性，容易降低表面上的训练损失却增加边缘相关性与层特异结构泄漏。实验应报告
+\begin{equation}
+    \operatorname{EdgeCorr}(z,x_h),
+    \qquad
+    W_1\big(\mathcal L(A_hz),\mathcal L(n_h\mid c_h)\big),
+    \qquad
+    \E\norm{\Pi_{\cS}(z)},
+\end{equation}
+并比较微小病灶保持率、噪声功率谱和跨体数据泛化误差。若同体积残差取得更低训练损失但边缘相关性、$\E\norm{\Pi_{\cS}(z)}$ 或泛化误差更高，则说明其收益来自解剖泄漏而非更好的噪声标定；跨体积外生残差则更符合 A3 的外生性假设。
+
+\subsection{审稿人可能质疑与对应回应}
+
+\paragraph{质疑一：低通上下文会不会损失有用高频信息？}
+回应是：本文并不否认邻层高频有时有用，但自监督去噪的主要风险是把中心层独有高频结构误判为噪声。为了理论可识别性和医学安全性，本文有意牺牲一部分邻层高频补偿能力，换取可审计的高频泄漏上界。若任务是超分辨率或插值，高频邻层可能更重要；但本文任务是自监督去噪，目标优先级不同。
+
+\paragraph{质疑二：中心层单输出是否削弱 2.5D 创新性？}
+回应是：创新点不在于输出几个通道，而在于如何利用邻层信息。本文使用形变对齐、低通上下文编码、可靠性门控和上下文 Jacobian 约束来利用 2.5D 信息，这比简单通道拼接更具有结构性和理论解释性。
+
+\paragraph{质疑三：近端交替是否只是工程技巧？}
+回应是：在移动伪输入分布下，普通 PL 条件不再适用。近端项和 cycle-level 交替直接对应 A10 中的分布漂移控制项 $\delta_Y^{(k)}$，因此它是理论结构的一部分，而非单纯训练技巧。
+
+\paragraph{质疑四：残差池是否仍然可能含有结构泄漏？}
+回应是：是的，本文不声称残差池完美纯噪声，而是用 $\epsilon_{\mathrm{gate}}$、$\epsilon_{\mathrm{cal}}$ 和边缘相关审计显式记录该缺陷。理论结论是条件性的：当这些可测误差足够小时，闭环稳定；当它们变大时，模型应被判定为进入失效场景。
+
+\paragraph{质疑五：为什么不证明全局收敛？}
+回应是：深度网络参数空间存在非凸性、重参数化、通道置换和归一化尺度不唯一。声称全局唯一参数收敛并不可信。本文只证明局部吸引域内的算子稳定性，并将所有无法全局保证的部分写成可审计误差项。
+
+
+\section{失效场景与限制}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{p{0.30\linewidth}p{0.24\linewidth}p{0.36\linewidth}}
+\toprule
+失效场景 & 破坏的条件 & 后果 \\
+\midrule
+注入强度过大 & A3, A7 & 训练输入远比推理输入更噪，输出可能过度平滑或动态范围收缩。 \\
+注入强度过小或 $\alpha_{\min}=0$ & 训练目标设计 & 训练对接近恒等映射，去噪器缺少有效降噪压力。 \\
+结构预测器过快更新 & A9, A10 & 锚点和残差池互相污染，loss 震荡或进入退化闭环。 \\
+EMA 衰减过小 & A8 & 锚点跟随当前去噪器噪声振荡，结构反馈不稳定。 \\
+单层微小病灶或钙化 & A1, A4, 损失设计 & 若门控或 $\omega_i$ 保护失效，层特异结构可能被学习为应去除成分。 \\
+层厚或层间距变化明显 & A1, A12 & 轴向二阶插值误差和部分容积偏差随 $d^2+\nu_t^2$ 放大，残差池更容易混入厚层伪影。 \\
+残差均值或尺度估计漂移 & A3 & 合成输入条件均值偏移，风险摄动项变大。 \\
+采集协议混杂严重 & A2, A3, A7 & 单一标量归一化无法匹配不同噪声统计，noisier-to-noisy 偏差增大。 \\
+\bottomrule
+\end{tabular}
+\caption{稳定双反馈模型的典型失效场景。}
+\label{tab:limitations}
+\end{table}
+
+\section{必要实证验证与定量计算}
+
+为了使本理论框架具有可审计性与实证可检验性，本节首先设计针对核心假设的实验检验与假设检验方案，随后给出关键理论常数与上界的定量化计算方法，最后列出必要的工程实证验证项。
+
+\subsection{理论假设的实验设计与统计检验方案}
+\label{sec:hypothesis-testing}
+
+对于第~\ref{sec:assumptions}~节提出的核心假设，可以通过设计以下具体的实验方案与统计假设检验进行论证：
+
+\subsubsection{A1 (主体结构二阶光滑性) 的检验}
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{实验设计}：收集高剂量、超薄层重建（如 $\Delta z = 0.625\text{mm}$）的干净参考体数据 $s$，以消除随机噪声影响。
+    \item \textbf{统计检验}：设零假设 $H_0: \frac{1}{m}\norm{s_h - \frac{s_{h-1} + s_{h+1}}{2}}_2^2 > \epsilon_0$（即均方插值误差大于设定阈值）。在全肺或全腹部解剖区域采样 $N$ 组相邻切片三元组，计算差分均方误差。通过 $\chi^2$ 拟合优度检验或单侧 $t$-检验，检验在显著性水平 $\alpha = 0.05$ 下是否能拒绝 $H_0$，从而论证二阶切片光滑性的合理性。
+\end{itemize}
+
+\subsubsection{A2 (残差独立性) 的检验}
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{实验设计}：在残差池中抽取经过门控与归一化的残差样本 $z_d$（来自供体体积 $V_d$），以及独立的受体切片 $x_h$（来自受体体积 $V_c$）。
+    \item \textbf{统计检验}：在图像空间随机采样像素点对 $(z_d(i), x_h(i))$，计算两者的距离相关系数（Distance Correlation, dCor）或互信息（Mutual Information）。同时计算低通调制权重 $A_h$ 与受体边缘梯度 $\norm{G_\sigma x_h}$ 的相关性，估计 $\E\norm{\Pi_{\mathrm{hi}}A_c}$。若方差图--边缘相关显著，则说明 $\epsilon_{\mathrm{mod}}$ 过大，存在 shortcut learning 风险。
+\end{itemize}
+
+\subsubsection{A3 (均值无偏与 Wasserstein 标定对齐) 的检验}
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{实验设计}：计算通过门控后的残差均值漂移，并使用 Bootstrap 重采样计算实际注入噪声与目标噪声的经验分布。
+    \item \textbf{统计检验}：对均值漂移，检验零假设 $H_0: \E[\hat\mu_t] \ne 0$。对分布对齐，利用双样本 Kolmogorov-Smirnov 检验（KS检验）或基于两样本 Bootstrap 的 Wasserstein-1 距离置信区间估计。若计算得到的 $W_1$ 距离的 95\% 置信区间上界低于设定阈值 $\epsilon_{\mathrm{cal}}$，则接受对齐假设。
+\end{itemize}
+
+\subsubsection{A4 (残差质量门控有效性) 的检验}
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{实验设计}：使用配对的高剂量薄层图像作为参考，计算残差 $\hat r_h$ 投影到低频解剖空间 $\Pi_{\cS}$（通过二维傅里叶变换的低频区域积分，或小波变换的近似分量）的能量占比。
+    \item \textbf{统计检验}：设零假设 $H_0: \E[\norm{\Pi_{\cS}(\hat r_h)}_2] \ge \epsilon_{\mathrm{gate}}$（即结构残留能量高于泄露限度）。在通过门控的样本集上计算投影模长，执行单样本 $t$-检验。若 $p < 0.05$ 且拒绝 $H_0$，则证实门控有效控制了结构泄露。
+\end{itemize}
+
+\subsubsection{A5 \& A6 (网络 Lipschitz 常数) 的检验}
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{实验设计}：对训练完成的结构预测网络 $P_\phi$ 与去噪残差网络 $R_\theta$。在图像输入端施加微小的高斯随机摄动 $\delta$，观察输出端的变化量 $\Delta P$ 与 $\Delta R$。
+    \item \textbf{统计检验}：利用幂迭代法计算网络各层权重矩阵的最大奇异值（谱范数），并乘性相乘得到 Lipschitz 上界。或者通过对大量样本计算差分比值 $\frac{\norm{P_\phi(u) - P_\phi(v)}_2}{\norm{u-v}_2}$ 并检验其是否以极高概率（如 99\%）有界于 $L_P$ 和 $L_R$。
+\end{itemize}
+
+\subsubsection{A9 (双反馈压缩条件) 的检验}
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{实验设计}：在联合训练平衡点附近，分别对锚点 $\bar x_h$ 施加微小偏差扰动并测量残差误差 $e_R$ 的响应斜率，以估算 $C_A$；同理对注入的残差施加微小偏差扰动测量去噪输出误差 $e_D$ 的响应斜率，以估算 $C_R$。
+    \item \textbf{统计检验}：联合检验零假设 $H_0: C_A C_R \ge 1$。通过蒙特卡洛敏感性分析计算乘积 $C_A C_R$ 的经验分布，检验是否以极高置信度（如置信度 $> 95\%$）拒绝 $H_0$，从而证明双反馈环的压缩收敛性。
+\end{itemize}
+
+
+\subsubsection{A10 (Lyapunov 型近端下降与 stationary 条件) 的检验}
+\begin{itemize}
+    \item \textbf{实验设计}：对每个 cycle 记录近端目标 $\tilde\cL_D^{(k)}$、$\tilde\cL_P^{(k)}$、参数步长 $\norm{\theta_{k+1}-\theta_k}$、$\norm{\phi_{k+1}-\phi_k}$、构造分布漂移 $\delta_Y^{(k)}$ 和梯度范数 $\norm{\nabla\Phi_k}$。若近端项有效，稳定阶段应观察到 Lyapunov 目标整体下降、步长平方可求和趋势和梯度范数下降趋势。
+    \item \textbf{统计检验}：检验经验下降量
+    \begin{equation}
+        \Delta\Phi_k:=\Phi_k-\Phi_{k+1}
+    \end{equation}
+    是否与 $\norm{\theta_{k+1}-\theta_k}^2+\norm{\phi_{k+1}-\phi_k}^2$ 正相关，并检查目标漂移 $\delta_Y^{(k)}$ 是否在 EMA、审计刷新频率和近端项增大后显著下降。该检验直接对应 Lyapunov 下降条件，而不是拟合到未知全局最优点的距离。
+\end{itemize}
+
+\subsection{理论参数与上界的定量化计算方法}
+\label{sec:quantitative-bounds}
+
+本框架的理论边界（如 Corollary~\ref{cor:overall-coreA} 的总体误差接口）可以通过下述数学公式与实证流程进行定量化计算：
+
+\subsubsection{主体结构最大轴向二阶曲率 \texorpdfstring{$M_2$}{M2} 与光滑常数 \texorpdfstring{$\kappa$}{kappa}}
+对于连续的三维干净体数据函数 $f(z)$，其轴向二阶导数 $M_2$ 可由配对的薄层高剂量 CT 序列 $s(z)$ 通过二阶中心差分进行经验估计：
+\begin{equation}
+    M_2 \approx \max_{h} \norm{\frac{s_{h+1} - 2s_h + s_{h-1}}{d^2}}_2,
+\end{equation}
+其中 $d$ 为物理层间距。二阶插值光滑常数 $\kappa$ 则对应主体光滑结构差分的均值或高分位数：
+\begin{equation}
+    c_0 \kappa \approx \frac{1}{d^2} \cdot \text{Percentile}_{99\%}\left( \left\{ \norm{s_h^{\mathrm{sm}} - \frac{s_{h-1}^{\mathrm{sm}} + s_{h+1}^{\mathrm{sm}}}{2}}_2 \right\}_{h} \right).
+\end{equation}
+
+\subsubsection{层厚敏感度核有效轴向尺度 \texorpdfstring{$\nu_t$}{nu-t}}
+有效层厚尺度 $\nu_t$ 决定了部分容积效应的方差级别。根据名义重建层厚 $t$ 和重建核，可作如下定量映射：
+\begin{itemize}[leftmargin=2em]
+    \item 若重建层敏感度曲线（SSP）近似为均匀窗口（Box Kernel），则二阶矩为：
+    \begin{equation}
+        \nu_t = \sqrt{\int_{-t/2}^{t/2} u^2 \frac{1}{t} du} = \frac{t}{\sqrt{12}} \approx 0.289 t.
+    \end{equation}
+    \item 若 SSP 近似为高斯函数，且名义半高全宽（FWHM）为 $t$，则有效轴向标准差为：
+    \begin{equation}
+        \nu_t = \frac{t}{2\sqrt{2\ln 2}} \approx 0.425 t.
+    \end{equation}
+\end{itemize}
+
+\subsubsection{预测器结构表达偏置 \texorpdfstring{$\epsilon_P$}{epsilon-P}}
+在去噪监督锚点完全收敛（即 $\epsilon_A \to 0$）的理想状态下，结构预测器 $P_\phi$ 对干净输入 $(s_{h-1}, \allowbreak s_{h+1})$ 的逼近偏置 $\epsilon_P$ 可定量计算为：
+\begin{equation}
+    \epsilon_P \approx \frac{1}{N}\sum_{h=1}^N \norm{P_\phi(s_{h-1}, s_{h+1}) - s_h^{\mathrm{sm}}}_2 - c_0 \kappa d^2.
+\end{equation}
+
+\subsubsection{门控残留解剖结构泄露限 \texorpdfstring{$\epsilon_{\mathrm{gate}}$}{epsilon-gate}}
+利用高剂量薄层图像中提取的低通结构分量 $s_h^{\mathrm{low}} = K_\sigma * s_h$，定量估计通过质量门控筛选的残差 $\hat r_h$ 中的残留结构能量：
+\begin{equation}
+    \epsilon_{\mathrm{gate}} \approx \E \left[ \frac{\ip{\hat r_h}{s_h^{\mathrm{low}}}}{\norm{s_h^{\mathrm{low}}}_2} \right].
+\end{equation}
+
+\subsubsection{去噪器与预测网络局部 Lipschitz 常数 \texorpdfstring{$L_D,L_P$}{LD-LP} 与谱范数校验}
+对于包含卷积层、残差块、归一化层、拼接和上采样的网络 $R_\theta$ 或 $P_\phi$，不能仅由每层谱范数约束推出整网严格非膨胀。更稳健的工程校验应同时报告理论上界和经验扰动比值。设
+\begin{equation}
+    s_\ell=\sigma_{\max}(W_\ell), \qquad s_\ell\le 1,
+\end{equation}
+残差块缩放系数为 $\gamma_\ell$，非线性、归一化与上采样带来的局部常数被吸收到 $K_\ell$ 中，则残差块链式上界可写为
+\begin{equation}
+    \Lip(R_\theta)
+    \le
+    C_{\mathrm{arch}}\prod_{\ell=1}^{L}(1+\gamma_\ell K_\ell s_\ell).
+\end{equation}
+如果网络是无显式残差跳连的纯顺序分支，可退化为
+\begin{equation}
+    \Lip(R_\theta)
+    \le C_{\mathrm{arch}}\prod_{\ell=1}^{L}s_\ell.
+\end{equation}
+从而去噪器 $D_\theta(y_h,c_h)=y_h-\eta_D R_\theta(y_h)$ 的局部 Lipschitz 上界为
+\begin{equation}
+    L_D\le1+\eta_D\Lip(R_\theta).
+\end{equation}
+同理，为了使 Wasserstein 标定分布稳定性常数 $C_{\mathrm{dist}}=\mathcal O(1)$ 保持稳定，要求对去噪网络和预测网络均执行层谱范数、残差缩放、归一化层尺度以及经验扰动比值校验。推荐在测试集上估计
+\begin{equation}
+    \widehat L_D=
+    \max_{u,v\in\mathcal B}
+    \frac{\norm{D_\theta(u,c)-D_\theta(v,c)}_2}{\norm{u-v}_2+\epsilon},
+    \qquad
+    \widehat L_P=
+    \max_{u,v\in\mathcal B}
+    \frac{\norm{P_\phi(u)-P_\phi(v)}_2}{\norm{u-v}_2+\epsilon},
+\end{equation}
+并报告其 95\% 与 99\% 分位数，而不是只报告单层谱范数乘积。
+
+\subsection{常规工程实证验证规范}
+
+\subsubsection{训练--推理强度一致性}
+
+必须比较 $y_h$、$x_h$、推理输入 $x$ 和输出 $D_\theta(x)$ 的均值、方差、分位数、低频标准差、HU 直方图和局部对比度。若输出低频标准差系统性低于输入，应降低 $\alpha_{\max}$、增大低频一致性权重或减小去噪残差缩放 $\eta_D$。
+
+\subsubsection{残差噪声性验证}
+
+\begin{itemize}[leftmargin=2em]
+    \item 必须报告通过门控残差的 $q_{\mathrm{low}}$、$q_{\mathrm{corr}}$、功率谱、方向性伪影分量、均值漂移和尺度稳定性。
+    \item 需要对比三组实验：(1) 无门控；(2) 仅低频门控；(3) 低频加相关性双重门控。验证双重门控是否能将结构泄露控制在 $\epsilon_{\mathrm{gate}}$ 以下。
+\end{itemize}
+
+\subsubsection{层厚--伪影量化验证}
+
+必须按 slice thickness、slice spacing、重建核和解剖部位分层报告残差伪影指数 $A_z(t,d)$、门控接受率、$q_{\mathrm{low}}$、$q_{\mathrm{corr}}$、轴向方向性功率谱和输出误差指标。建议用
+\begin{equation}
+    A_z(t,d)
+    =
+    \beta_0+\beta_1(d^2+\nu_t^2)
+    +\beta_2\mathrm{Dose}
+    +\beta_3\mathrm{Kernel}
+    +b_{\mathrm{volume}}
+    +\varepsilon
+\end{equation}
+进行分层或混合效应回归，其中 $b_{\mathrm{volume}}$ 表示体数据随机效应。若存在薄层重建或高剂量参考，应直接报告 $\norm{D_\theta(x)-s_{\mathrm{ref}}}$、SSIM、PSNR、边缘梯度和厚层伪影投影误差随 $d^2+\nu_t^2$ 的变化斜率；若没有参考，应报告残差投影、输出低频一致性和方向性伪影能量的偏相关。该验证对应命题 \ref{prop:thickness-scale} 和推论 \ref{cor:thickness-delta}，用于判断层厚变化是否真的进入了误差主导项。
+
+\subsection{双反馈稳定性验证}
+
+必须记录 $\cL_D$、$\cL_P$、$\norm{D_\theta(x)-D_{\bar\theta}(x)}$、残差池接受率、$\hat\mu_t$ 和 $\hat\sigma_{r,t}$ 的时间曲线。若 $\cL_D$ 与 $\cL_P$ 同步震荡，应增大 $\rho_{\mathrm{ema}}$、降低 $\eta_\phi/\eta_\theta$ 或延长阶段 I 与阶段 II。
+
+\subsection{微小结构保护验证}
+
+应对人工植入或已标注的微小结节、钙化点、细小骨折线进行敏感性测试，报告去噪前后病灶对比度、体积、最大 HU、边缘梯度和检测模型召回率。需要比较 $\omega_i\equiv1$、启发式保护权重和检测器保护权重三种设置。该验证直接对应式 \eqref{eq:overall-error-coreA} 中的 $\E\norm{\cH_\tau\ell_h}$ 项，也检验 $\omega_i(x_h)$ 与 $\Omega_{\mathrm{sus}}$ 是否真正降低了微小结构区域的去噪压力。
+
+
+
+
+
+
+\section{执行层面对齐路径}
+
+本节给出与上述架构对应的执行层面修改路径。这里不涉及具体代码，只定义实现必须满足的不变量和训练状态转移。
+
+\subsection{接口一：残差控制器必须成为训练图的显式状态}
+
+实现中应维护 $\rho_t$、$|\cZ_{\mathrm{audit}}|$、$\pi_{\mathrm{pass}}$、全局审计误差 $\mathcal E_{\mathrm{audit}}$ 和最近一次 audit 时间戳。所有 residual injection 都必须读取 $\rho_t$。当 $\rho_t=0$ 时，任何路径都不得从残差池采样 $z_d$；当 $\rho_t=1$ 时，采样必须满足 receiver volume 与 donor volume 不同，且只能从通过 patch-level audit 的残差集合中取样。
+
+\subsection{接口二：残差增强阶段 不能再是 EMA-only residual}
+
+当前若只使用 $x_d-D_{\bar\theta}(x_d,c_d)$，残差容易被 teacher 的结构误差污染。执行层面应把 残差增强阶段 改为候选搜索：EMA residual、保守低通 residual、band-pass residual、TTA/dropout disagreement residual 和 calibrated synthetic fallback 并行产生候选。候选集合扩大并不意味着放宽审计；相反，它为严格审计提供更高的可通过概率。
+
+\subsection{接口三：审计粒度从 volume-level 改为 patch-level}
+
+不应以 attempted volumes 的通过数量判断残差池是否存在。每个 donor volume 应切成大量候选 patch，并对每个 patch 独立记录 low-frequency ratio、edge correlation、structure ratio、relative std 和 calibration proxy。最终报告至少包括 attempted patches、accepted patches、accepted rate、各审计指标的均值、分位数和最大值。只有 patch-level 统计满足阈值，才能置 $\rho_t=1$。
+
+
+\subsection{接口四：calibration proxy 必须有替代噪声分布闭环}
+
+执行层面必须为每个 calibration bin 维护 $\widehat{\mathcal Q}_{\mathrm{noise}}^{(b)}$。若存在可靠 HR--REG、重复扫描或模拟 clean/noisy pair，可把配对 residual 作为最高优先级 proxy；若不存在，则至少需要 MAD/NPS 合成噪声、TTA/dropout disagreement、conservative denoiser residual 或 Poisson-Gaussian proxy 中的两类。accepted residual 的校准报告必须同时包含 SWD、NPS 距离、relative std 和 guard 上界。没有 proxy 的数据集不能进入 residual-gated long training。
+
+\subsection{接口五：结构子空间必须落到可计算指标}
+
+实现中不能只记录一个抽象的 structure ratio。应至少实现低频能量、边缘支撑能量和梯度相关性；若数据允许，再加入 bone/vessel/morphology mask 和方向性伪影频带。每个投影是否启用、权重是多少、阈值如何设置，都应写入 audit config，并随 checkpoint 一起保存。若某个投影未实现，理论报告中必须明确该项未被该实验验证。
+
+\subsection{接口六：receiver patch-level injection 与 loss mask 必须一致}
+
+实现可以把 residual patch 放入 full-slice canvas，但 canvas 在非 receiver patch 区域必须为零，且主要 denoising loss 只在 $M_h$ 支撑内计算。receiver patch、mask patch 和 residual patch 的关系应满足 $\supp(A_hZ_h)\subseteq\supp(M_h)$。默认不使用旋转；若使用翻转或旋转，必须在变换后重新审计或证明审计指标不变。patch 外区域只能参与低频一致性或正则项，不能作为 residual-injected 主监督区域。
+
+\subsection{接口七：全局审计采用 accepted/error 双轨日志}
+
+执行日志应区分 all candidates、accepted pool 和 rejected diagnostics。pass rate 使用 all candidates 作为分母；accepted error 使用 accepted pool 的高分位数；rejected error 只用于诊断候选生成器，不应在 accepted pool 已足够且未过期时自动关闭 $\rho_t$。但如果 accepted pool 过期、容量不足或连续刷新无法补充合格 patch，则必须回退到 $\rho_t=0$。
+
+\subsection{接口八：绝对 std 阈值改为 relative std}
+
+执行层面不应使用固定 residual std 下限作为唯一尺度门槛。应记录
+\begin{equation}
+    \rho_{\mathrm{std}}=\frac{\operatorname{std}(z)}{\widehat\sigma_{\mathrm{noise}}(x)+\epsilon},
+\end{equation}
+并明确 $\widehat\sigma_{\mathrm{noise}}$ 的估计方式、归一化窗口、HU clipping 或 z-score 策略。只有在 edge correlation、low-frequency ratio 和 structure ratio 先通过后，才允许对残差做尺度归一化；否则 rescale 会放大结构污染。
+
+\subsection{接口九：alignment/context 冻结是可接受的保守实现}
+
+如果当前 alignment 与 context 作为 frozen construction module 使用，这是符合本文 stop-gradient 原则的。后续若训练 alignment，应使用独立的低通对齐损失、offset TV 正则、幅值裁剪和 cycle consistency，而不能让 $\cL_D$ 直接反传到形变场。
+
+
+\subsection{接口十：checkpoint continuation 必须重新审计 bootstrap}
+
+从 safe-backbone checkpoint 续训时，默认 $\rho_t=0$，不得直接继承旧 residual-gated 激活状态。必须重新构造或复检 $\cZ_{\mathrm{audit}}$、calibration proxy、pass-rate 和 accepted error。模型权重、EMA teacher、envelope/reliability estimator 和 frozen context/alignment 可以在预处理一致时继承；residual pool、controller 状态、$\alpha_t$ ramp 和 audit freshness 必须重新初始化或复检。优化器动量在切换到 residual-gated objective 时建议重置或衰减。
+
+\subsection{接口十一：长训放行条件}
+
+进入 residual-gated long training 前，应同时满足：
+\begin{enumerate}
+    \item $|\cZ_{\mathrm{audit}}|\ge N_{\min}$；
+    \item patch-level pass rate 不低于预设下限；
+    \item edge correlation、low-frequency ratio、structure ratio 均低于阈值；
+    \item relative std 落入可接受区间；
+    \item calibration proxy 或 SWD 报告没有明显漂移；
+    \item receiver volume 与 donor volume 采样隔离；
+    \item train--infer shift $S_t$ 不超过 $\kappa_{\mathrm{shift}}$，否则只允许 soft warmup 或回退；
+    \item $D$ 更新时 $A_h$、$c_h$、$z_d$、$\rho_t$、$g_h^{\mathrm{ctx}}$、$\lambda_h^{\mathrm{den}}$ 和形变场均 detach；
+    \item 若训练中审计指标失效，系统自动降低 $\rho_t$ 或回退到 $\rho_t=0$。
+\end{enumerate}
+
+若长期 $\cZ_{\mathrm{audit}}=\varnothing$，执行层面应报告该数据集未满足 residual enhancement 的前提，并以 safe backbone 作为正式 ablation，而不是强行放宽阈值进入残差训练。
+
+\subsection{接口十二：under-denoising 诊断与强度控制}
+
+执行层面必须单独记录 $g_h^{\mathrm{ctx}}$ 和 $\lambda_h^{\mathrm{den}}$。不能用一个 gate 同时表示上下文可信度和去噪幅度。每次可视化 denoising panel 时，至少同时报告 $x_h-D_\theta(x_h,c_h)$ 的 std、频谱、与 $\widehat\sigma_{\mathrm{noise}}$ 的比例 $\rho_{\mathrm{den}}$。若 $D$ output 与 REG center 几乎重合，而 masked loss 已经很低，应判定为 conservative identity risk。此时优先修改 mask、$\beta_t$、$\rho_t$ ramp、$\alpha_t$、gate prior 和 $\lambda_h^{\mathrm{den}}$，而不是继续长训。
+
+
+
+
+\subsection{接口十三：G4.5 去噪强度审计必须成为硬放行门}
+
+执行层面必须把 G4.5 作为独立阶段实现，而不是把去噪强度统计混入普通 validation。该阶段输入为 $x_h,c_h$ 和当前 $D_\theta$ checkpoint，禁止启用 dynamic target，禁止用 $P_\phi$ 输出替换监督目标。输出必须包含 \texttt{denoising\_strength\_audit.json}，记录 $r_D^{hom}$、$e_D$、$A_{NPS}$、$d_{shape}$、$\eta_{res-edge}$、$c_{lesion}$、identity collapse flag 和 over-smoothing flag。
+
+若 G4.5 失败，训练控制器必须阻止后续 G5/G6/G7。失败原因分为三类：若 $r_D^{hom}>0.90$ 且 $e_D<0.05$，属于欠去噪；若 $r_D^{hom}<0.60$ 或 $c_{lesion}<0.90$，属于过平滑；若 $\eta_{res-edge}>0.10$，属于结构删除。三类失败的修复动作不同，不能用同一个“继续训练更久”处理。
+
+\subsection{接口十四：D 模块推荐实现为噪声估计器}
+
+为了避免 black-box identity，推荐将 $D_\theta$ 的主要输出改为噪声估计 $\hat n_h$，再由强度 gate 得到最终图像：
+\begin{equation}
+    \hat s_h=x_h-G_h^{\mathrm{den}}\odot \hat n_h.
+\end{equation}
+实现中可保留原有 residual refinement branch，但必须显式输出 \texttt{noise\_estimate}、\texttt{denoise\_gate} 和 \texttt{removed\_residual}。所有可视化 panel 应同时显示 $x_h$、$\hat s_h$、$x_h-\hat s_h$、$G_h^{den}$、结构风险 mask 与 homogeneous mask。
+
+
+\section{实现规范补充：数据、审计与评估协议}
+\label{sec:implementation-protocol-full}
+
+前文定义了 本框架的 coarse-to-fine 非对称双模块架构，但若缺少数据归一化、分辨率层级、结构风险掩膜、噪声子空间频带和 checkpoint continuation 的唯一规范，工程实现仍会被迫采用保守默认。本节将这些实现口径写成理论文档的一部分。所有实验均应在配置文件、日志和 checkpoint metadata 中记录本节定义的关键字段；若某一项没有实现，应在实验报告中明确标注为未验证项，而不能把相应理论界作为已验证结论使用。
+
+\subsection{HU 标定、窗口裁剪与归一化规范}
+\label{subsec:hu-normalization-protocol}
+
+所有 REG、HR 与模型输入必须先经过统一强度协议。若原始数据保留 HU 或线性衰减系数，应记录每个 volume 的 offset、scale、单位、scanner kernel 与重建参数。若 REG 与 HR 分别来自不同重建链路，应先验证二者满足同一线性标定：
+\begin{equation}
+    I_{\mathrm{HR}}^{\mathrm{HU}}\approx a I_{\mathrm{REG}}^{\mathrm{HU}}+b,
+    \qquad |a-1|\le \epsilon_a,
+    \quad |b|\le \epsilon_b .
+\end{equation}
+若该校准不成立，HR 不得作为直接像素监督，只能作为定性参考或经重标定后的 validation reference。
+
+训练前应固定一个器官/任务相关的 HU clipping 窗口
+\begin{equation}
+    I^{\mathrm{clip}}=\clip(I^{\mathrm{HU}};L_{\mathrm{HU}},U_{\mathrm{HU}}),
+\end{equation}
+其中 $(L_{\mathrm{HU}},U_{\mathrm{HU}})$ 必须在实验协议中声明。若使用 percentile 归一化，默认只允许在训练集 volume 级别估计全局分位数 $q_{\rm low},q_{\rm high}$，并固定用于训练、验证与测试：
+\begin{equation}
+    x=\frac{\clip(I^{\mathrm{clip}};q_{\rm low},q_{\rm high})-q_{\rm low}}
+    {q_{\rm high}-q_{\rm low}+\epsilon}.
+\end{equation}
+除非明确做 ablation，不建议 per-slice percentile normalization，因为它会改变 slice 间相对噪声尺度，并破坏 residual calibration、relative std 与 $\alpha_t$ 的可比性。若使用 z-score，应在训练集或 volume 级别估计 $\mu,\sigma$，并记录是否对每个 volume 单独归一化。所有 residual std、$\widehat\sigma_{\rm noise}$、$\rho_{\rm std}$、$S_t$ 与 $\alpha_t$ 均必须在同一归一化空间中计算。
+
+推荐默认规范为：REG/HR 使用同一 HU 线性标定；先做固定 HU clipping；再使用训练集全局 percentile 或 volume-level z-score；训练、审计、可视化、HR validation 使用同一 forward normalization 与 inverse normalization。若某实验使用 per-slice normalization，应单独报告为强归一化 ablation，不能与全局归一化实验混合比较。
+
+\subsection{OME-Zarr 多分辨率层级选择}
+\label{subsec:zarr-resolution-protocol}
+
+OME-Zarr 常包含多个 resolution level，记为 $\{0,1,2,\ldots\}$。本文默认最高分辨率层级为 level 0。若训练使用 REG/0，则验证和可视化也应默认使用 REG/0；若 HR 作为 reference，则默认使用 HR/0。只有在形状、spacing、axis order 与物理坐标完全一致时，REG/0 与 HR/0 才能进行逐 voxel 比较。
+
+若数据集中存在 HR/2 或其他低分辨率层级，其用途应被限制为以下三类之一：
+\begin{enumerate}[leftmargin=2em]
+    \item 低分辨率 alignment sanity check；
+    \item coarse context 或 visualization reference；
+    \item 多分辨率 ablation，而不是主训练 target。
+\end{enumerate}
+HR/2 不得与 REG/0 直接计算像素损失，除非经过明确 resampling 并记录插值核、spacing 和坐标映射。训练 patch 采样必须记录：source group、resolution level、shape、spacing、chunk shape、axis order 和 crop 坐标。若 REG 与 HR 的 shape 不一致，应以物理坐标而不是 chunk index 对齐；chunk 只用于 I/O，不应被解释为模型 patch 的天然对应单位。
+
+推荐默认规范为：训练使用 REG/0；若 HR/0 与 REG/0 shape 和物理 spacing 一致，则 HR/0 只用于 validation 和 visualization，不参与自监督训练；HR/2 只用于低分辨率 sanity check 或消融，不作为主目标。
+
+\subsection{Alignment 的可执行定义}
+\label{subsec:alignment-executable-protocol}
+
+若相邻切片已经处在同一重建体坐标系，且 slice spacing 足够小，默认实现可以采用 frozen alignment：
+\begin{equation}
+    u_h^- = \Pi_{\rm lo/mid}x_{h-1},
+    \qquad
+    u_h^+ = \Pi_{\rm lo/mid}x_{h+1}.
+\end{equation}
+此时 $\mathcal W_{h\pm1\to h}$ 视为恒等或受限低通构造算子，且 $D$ loss 不允许反传到 alignment/context 构造链路。
+
+若启用显式 deformable alignment，应定义 offset field $v_{h\pm1\to h}$：
+\begin{equation}
+    u_h^{\pm}=\mathcal W(x_{h\pm1};v_{h\pm1\to h}),
+    \qquad
+    \norm{v_{h\pm1\to h}}_\infty\le d_{\max} .
+\end{equation}
+alignment 只能在低通图像上训练，其损失应为：
+\begin{equation}
+\begin{aligned}
+    \mathcal L_{\rm align}
+    =&\ \norm{\Pi_{\rm lo}\mathcal W(x_{h\pm1};v)-\Pi_{\rm lo}x_h}_1
+    +\lambda_{\rm TV}\TV(v) \\
+    &+\lambda_{\rm mag}\norm{v}_2^2
+    +\lambda_{\rm cyc}\mathcal L_{\rm cycle} .
+\end{aligned}
+\end{equation}
+其中 $d_{\max}$、$\lambda_{\rm TV}$、$\lambda_{\rm mag}$ 与 $\lambda_{\rm cyc}$ 必须写入配置。若 $\TV(v)$、最大位移、cycle error 或 alignment residual 超过阈值，则 $W_h^{\rm adj}$ 和 $W_h^{\rm fb}$ 必须降低。任何情况下，$\mathcal L_D$ 不得直接更新 $v$；若训练 alignment，应在独立阶段或独立优化器中执行，并经过 alignment audit 后冻结或 EMA 化。
+
+\subsection{结构风险 mask 的医学与 proxy 定义}
+\label{subsec:medical-structure-risk-mask}
+
+结构风险区域定义为不应被 P 的 coarse proposal 或 D 的 homogeneous 去噪压力强行平滑的区域：
+\begin{equation}
+    \Omega_{\rm struct}=
+    \Omega_{\rm edge}\cup\Omega_{\rm bone}\cup\Omega_{\rm vessel}\cup
+    \Omega_{\rm metal}\cup\Omega_{\rm calc}\cup\Omega_{\rm lesion}\cup\Omega_{\rm crack} .
+\end{equation}
+在没有专用分割模型时，允许使用保守 proxy：梯度强度、Laplacian/band-pass response、局部 Hessian vesselness、HU 阈值、形态学细长结构响应和高密度小连通域。推荐优先级为：metal/high-density artifact 最高，其次 bone/calcification，再次 vessel/crack/edge，最后 homogeneous/background。高优先级风险 mask 应覆盖低优先级 mask。
+
+对于 HU 数据，可采用以下保守规则作为默认 proxy：bone/calcification 对应高 HU 且连通结构或小高密度点；metal 对应极高 HU 或局部饱和/条纹邻域；vessel/crack 对应细长、连续且 Hessian 或 Frangi response 高的区域；lesion/suspicious region 对应局部对比异常、孤立小连通域或外部检测器提示。所有 proxy mask 需 dilation，默认 dilation 半径应随 spacing 记录为物理半径 $r_{\rm dil}$，而不是固定像素数。
+
+若实验没有医学分割器，只能声明“edge + band-pass + HU/morphology proxy 支撑结构保护”，不能宣称已精确识别血管、钙化、裂纹或病灶。结构风险 mask 的定义、阈值、dilation 半径、是否启用 detector，以及各 mask 的可视化样例必须进入实验附录。
+
+\subsection{噪声子空间 Pi-N 的频带定义}
+\label{subsec:noise-subspace-frequency-band}
+
+噪声子空间 $\Pi_{\mathcal N}$ 不应被简单定义为所有高频。它应在 homogeneous 区域内通过噪声功率谱 NPS 或高频 MAD proxy 估计。给定 voxel spacing $(\Delta_x,\Delta_y,\Delta_z)$，频率坐标为
+\begin{equation}
+    f_x\in[-(2\Delta_x)^{-1},(2\Delta_x)^{-1}],
+    \qquad
+    f_y\in[-(2\Delta_y)^{-1},(2\Delta_y)^{-1}] .
+\end{equation}
+若使用 2D slice denoising，默认先在 $(f_x,f_y)$ 平面估计 NPS；若使用厚层或各向异性体素，应单独记录 through-plane spacing，并避免把层间结构变化解释为噪声频带。
+
+推荐定义为：在 $\Omega_{\rm hom}$ 中估计 NPS，选择能量稳定且不包含明显结构边缘峰的中高频环带 $[f_1,f_2]$，并排除接近 Nyquist 的插值/重建伪影频带和方向性 streak 频带。若存在重建核差异，应按 scanner/kernel/dose 分层估计 $[f_1,f_2]$。若存在各向异性噪声或条纹伪影，应使用方向性 mask：
+\begin{equation}
+    \Pi_{\mathcal N}=\mathcal F^{-1}\!\big[H_{\mathcal N}(f_x,f_y;\kappa,\mathrm{kernel})\,\mathcal F(\cdot)\big] .
+\end{equation}
+其中 $H_{\mathcal N}$、$f_1,f_2$、方向性排除角度和是否使用 whitening 必须写入配置。若只能实现通用 band-pass proxy，应在论文中称为 noise-band proxy，而不是严格噪声子空间。
+
+\subsection{Calibration proxy 与阈值来源}
+\label{subsec:calibration-threshold-protocol}
+
+residual calibration 不能依赖单一指标。对每个 calibration bin $b$，需要构造替代噪声分布族：
+\begin{equation}
+    \widehat{\mathcal Q}_{\rm noise}^{(b)}
+    =\{\widehat Q_{\rm MAD},\widehat Q_{\rm NPS},\widehat Q_{\rm TTA},
+    \widehat Q_{\rm cons},\widehat Q_{\rm PG},\widehat Q_{\rm pair}\} .
+\end{equation}
+其中 $\widehat Q_{\rm pair}$ 仅在 REG/HR 或重复扫描几何配准误差低于阈值时启用。若 pair residual 存在，必须估计 registration error $e_{\rm reg}$；若 $e_{\rm reg}$ 在结构边界处超过阈值，则 pair residual 只能在 homogeneous 区域用于 calibration，不能全图使用。
+
+审计阈值可以来自三种来源：固定经验阈值、训练集分位数或 scanner/kernel/dose 分层阈值。正式实验推荐使用训练集分位数阈值，并在 validation set 上固定，不允许根据测试结果调节。进入 residual-gated long training 至少需要两类互补 proxy 通过：一种尺度 proxy，如 relative std 或 MAD；一种形状 proxy，如 NPS distance、SWD 或 sorted high-pass guard。若只有一种 proxy 可用，只能进入 soft warmup，不能声明完成 full residual calibration。
+
+accepted residual 的报告应包含：relative std 区间、SWD/NPS distance、low-frequency ratio、edge correlation、structure ratio、sorted high-pass guard 和 accepted pool 高分位数。rejected candidates 用于诊断候选生成器，不应影响未过期且质量合格的 accepted pool。
+
+\subsection{P-phi proposal 改善性的验收标准}
+\label{subsec:p-proposal-qualification}
+
+P 的 coarse proposal $p_h$ 必须先独立通过资格验收，才允许进入 D 的 target 或 refinement 训练。定义 homogeneous noise reduction ratio：
+\begin{equation}
+    r_P^{\rm hom}=
+    \frac{\Std_{\Omega_{\rm hom}}(\Pi_{\mathcal N}p_h)}
+    {\Std_{\Omega_{\rm hom}}(\Pi_{\mathcal N}x_h)+\epsilon} .
+\end{equation}
+默认要求 $r_P^{\rm hom}\le \gamma_{\rm hom}$。$\gamma_{\rm hom}$ 不应固定为全数据集常数；推荐从训练集 homogeneous ROI 的噪声 proxy 分布中估计，默认初始范围可设为 $0.75$--$0.9$，再按 scanner/kernel/dose 分层调整。若 P 训练早期无法达到该范围，应保持 P-only 或 feedback warmup，不应强行启用 D target update。
+
+同时必须满足结构和低频约束：
+\begin{equation}
+    \frac{\norm{\Pi_{\rm lo}(p_h-x_h)}}{\norm{\Pi_{\rm lo}x_h}+\epsilon}\le \tau_{\rm lo},
+    \qquad
+    \frac{\norm{\Pi_{\mathcal S}(p_h-x_h)}}{\norm{\Pi_{\mathcal S}x_h}+\epsilon}\le \tau_{\rm struct} .
+\end{equation}
+若存在 HR validation，可额外要求 $p_h$ 在 homogeneous 区域优于 REG：
+\begin{equation}
+    \norm{W_{\rm hom}(p_h-s_{\rm HR})}_1
+    \le
+    \norm{W_{\rm hom}(x_h-s_{\rm HR})}_1 .
+\end{equation}
+但 HR 不应参与训练或在线 model selection，除非实验明确为 supervised/validation-tuned ablation。
+
+P 相对 $x_h$ 与 $D_{\bar\theta}$ 的 bias 上界应分区定义。在 homogeneous 区域允许 $p_h$ 远离 $x_h$ 的噪声子空间；在结构区域限制 $\Pi_{\mathcal S}(p_h-x_h)$；与 $D_{\bar\theta}$ 的 agreement 只在结构子空间计算，不应惩罚 P 在噪声子空间比 D 更积极的去噪。benefit mask 在收益不足时默认降低权重而不是全局硬关闭；但若 $r_P^{\rm hom}\approx1$ 且 $\Delta_t\approx0$ 连续超过窗口 $T_{\rm stale}$，则应判定 feedback 无效并回退到 P-only qualification。
+
+\subsection{Dynamic target 与 refinement 启用条件}
+\label{subsec:dynamic-target-trigger-protocol}
+
+本框架的训练状态中，S3 表示 P qualification 通过后的 D refinement warmup，S3+ 表示 dynamic target 或 coarse-to-fine refinement 正式进入主训练。由 S3 到 S3+ 必须满足连续稳定条件，而不是单次 batch 条件。推荐门槛为：在最近 $T_{\rm qual}$ 个 step 或 $C_{\rm qual}$ 个 audit cycle 内，$r_P^{\rm hom}$、结构漂移、低频偏移、$W_h^{\rm fb}$ 均值、D/P structure agreement 和 target drift 均满足阈值。
+
+D/P agreement 应在结构子空间和低频子空间计算：
+\begin{equation}
+    a_{DP}^{\mathcal S}=
+    \frac{\norm{\Pi_{\mathcal S}(p_h-D_{\bar\theta}(x_h,c_h))}}
+    {\norm{\Pi_{\mathcal S}x_h}+\epsilon},
+    \qquad
+    a_{DP}^{\rm lo}=
+    \frac{\norm{\Pi_{\rm lo}(p_h-D_{\bar\theta}(x_h,c_h))}}
+    {\norm{\Pi_{\rm lo}x_h}+\epsilon} .
+\end{equation}
+不应使用全图 $\norm{p_h-D_{\bar\theta}}$ 作为关闭 feedback 的主指标。target update magnitude 必须有上下界：
+\begin{equation}
+    \delta_{\min}
+    \le
+    \frac{\Std_{\Omega_{\rm hom}}(\Pi_{\mathcal N}(t_h-x_h))}
+    {\widehat\sigma_{\rm noise}+\epsilon}
+    \le
+    \delta_{\max} .
+\end{equation}
+下界避免 nominal update， 上界避免过平滑。若结构区 target movement 超过阈值、$W_h^{\rm fb}$ 扩散到结构风险区域、target drift 连续上升或 D 输出在 homogeneous 区域重新引入噪声，应自动降低 $W_h^{\rm fb}$、回退到 S3 或关闭 dynamic target。
+
+\subsection{Residual pool freshness 与 checkpoint 规范}
+\label{subsec:residual-freshness-checkpoint}
+
+每个 residual audit 应产生 audit version hash。该 hash 至少应包含：数据集 ID、volume 列表、归一化配置、HU/window、resolution level、spacing、alignment 配置、mask 配置、$\Pi_{\mathcal N}$ 频带、$\Pi_{\mathcal S}$ 定义、calibration proxy、阈值、P/D checkpoint ID、EMA decay、candidate generator 配置和随机种子。若 hash 变化，旧 residual pool 默认失效。
+
+cached residual patch 必须保存 donor volume ID、resolution level、slice index、patch 坐标、物理坐标、normalization version、candidate type、audit metrics、accepted timestamp 和 audit version hash。receiver sampling 时必须保证 donor/receiver volume 隔离；若使用同 volume 不同 slice 的残差作为 ablation，必须单独标记并不得计入正式 cross-volume residual pool。
+
+checkpoint continuation 时，模型权重和 EMA 可继承，但 residual pool 与 controller 状态必须按 freshness 复检。推荐做法为：启动时随机抽取 accepted pool 的比例 $q_{\rm recheck}$ 重新计算审计指标；若复检失败率超过阈值，清空 pool 并重新 bootstrap。若训练目标从 P-only 切换到 D refinement 或 dynamic target，优化器动量应重置或衰减，$W_h^{\rm fb}$ ramp 和 $\rho_t$ ramp 应从安全值重启。
+
+\subsection{评估协议与模型选择}
+\label{subsec:evaluation-protocol-full}
+
+HR reference 可以用于 validation 与报告，但默认不得作为训练 loss。若使用 HR 进行 model selection，必须明确标注为 validation-tuned setting，并与完全自监督 setting 分开报告。若 HR/REG 存在配准误差，像素级 PSNR/SSIM 只能作为辅助指标，应同时报告 ROI noise、NPS、edge preservation 和 structure-risk error。
+
+正式评估至少包括以下指标：
+\begin{enumerate}[leftmargin=2em]
+    \item homogeneous ROI noise std 与 NPS shape；
+    \item $\Std_{\Omega_{\rm hom}}(\Pi_{\mathcal N}D)$ 与 $\Std_{\Omega_{\rm hom}}(\Pi_{\mathcal N}x)$ 的比例；
+    \item edge preservation：结构边缘梯度、Canny/LoG edge overlap 或 task-specific edge score；
+    \item structure-risk error：$\norm{W_{\rm struct}(D-x)}$、$\norm{\Pi_{\mathcal S}(D-x)}$；
+    \item P proposal 资格指标：$r_P^{\rm hom}$、low-frequency bias、structure drift；
+    \item D refinement 指标：$\norm{W_{\rm hom}(D-p)}$、$\norm{W_{\rm str}(D-x)}$、$\Pi_{\mathcal N}$ noise-guard；
+    \item residual audit 指标：accepted rate、relative std、SWD/NPS distance、freshness；
+    \item HR 可用时的 REG-HR、P-HR、D-HR 分区误差。
+\end{enumerate}
+
+小病灶仿真应在 REG 或 clean proxy 中插入已知形状、尺寸和对比度的结构，例如小球、细线、微钙化点或低对比 blob。插入位置应覆盖 homogeneous soft tissue、近边缘区域和结构复杂区域；尺寸、HU contrast、模糊核和数量分布应写入协议。报告去噪前后 lesion contrast、最大值、体积、边缘梯度和检测召回率。若模型在 homogeneous ROI 获得更强去噪但显著降低小病灶召回，应判定结构保护失败。
+
+所有评估脚本应固定 ROI selection、NPS window size、频带、边缘阈值、structure mask、归一化逆变换和统计分位数。若使用人工 ROI，应报告 inter-rater 或重复选择敏感性；若使用自动 ROI，应公开规则。smoke tests 只能证明接口可运行，不能替代正式评估。
+
+\section{结论}
+
+本文给出 TRACE-CT 完整协议的完整理论框架。与 固定 REG 目标方案 相比，完整协议的核心变化不是简单增大 residual injection 或去噪强度，而是重新定义自监督闭环中的监督对象：去噪器 $D_\theta$ 不再永远被固定 REG target $x_h$ 拉回，而是在低风险、高置信、结构受保护区域内接受由 $P_{\bar\phi}$ 提供的延迟动态目标
+\begin{equation}
+    t_h=(1-W_h)x_h+W_h\SG[\tilde s_h^P].
+\end{equation}
+同时，$D$ 的输入构造扰动 $\nu_h=y_h^M-x_h$ 又反向监督 $P_\phi$ 学习噪声识别、噪声尺度、feedback confidence 和 coarse target proposal。这形成了 本框架的双互反馈内核：
+\begin{equation}
+    D\text{-input construction}\Rightarrow P\text{-supervision},
+    \qquad
+    P\text{-coarse target proposal}\Rightarrow D\text{-supervision}.
+\end{equation}
+
+该机制仍然坚持医学安全优先原则。$P$ 的 proposal 不能全图替代 REG，也不能作为训练输入主体；它必须经 EMA 延迟、stop-gradient、D/P agreement、homogeneous 区域筛选、结构风险关闭、feedback warmup 和近端稳定化后，才能局部更新监督目标。在骨边缘、血管、金属伪影、疑似微小病灶或高不确定区域，$W_h$ 应退化到零，使目标回到 $x_h$。因此，本框架不是回到无约束 pseudo-clean generator，而是把监督对象更新纳入可审计、可降级、可消融的理论系统。
+
+理论上，本文分别给出了 masked residual-gated 输入构造、残差池审计、动态目标风险分解、pseudo-target 改善假设、双反馈增益条件、训练--推理偏移控制和近端块级交替 stationarity 接口。本文不声称无监督模型能无偏恢复所有 clean CT 结构，也不声称双互反馈必然优于固定 REG 目标；它明确要求通过 HR/REG validation、模拟退化、重复扫描、homogeneous ROI 噪声谱、结构保护指标和 D/P agreement 统计验证 $P$ proposal 的改善性。若该验证失败，系统应关闭 $W_h$ 并退回 固定 REG 目标方案 的安全目标。
+
+从工程角度，本框架的最重要执行口径是：先让 固定 REG 目标方案 residual-gated backbone 达到“有效但偏保守”的稳定状态，再逐步启用 feedback mask 和 target refinement；不要从训练早期就让 $P$ 全图监督 $D$。每次实验必须同时报告 $\rho_t$、effective injection ratio、$\lambda_h^{\mathrm{den}}$、$W_h$ 分区统计、$\rho_{\mathrm{den}}$、$D/P$ agreement、target update magnitude、结构区误差和 homogeneous 区域噪声下降。只有当这些指标共同支持“低风险区域 target refinement 改善、结构区域未受损”时，才能声称 本框架的双互反馈机制成功突破 固定 REG 目标方案 的保守上限。
+
+
+本框架 在 常规双反馈设计 基础上进一步指出：仅有双互反馈并不足以保证监督目标脱离 REG。若 $D_{\bar\theta}$ 本身保守，则 $D\to P$ 反馈会复制这种保守性。因此，本框架 新增同质区域独立去噪驱动、结构子空间 agreement 与 safety-benefit feedback mask，使 $P$ 在安全区域拥有不依赖 $D$ teacher 的噪声抑制动力，同时仍在结构区域保持 REG anchor。由此，本框架的核心闭环从
+\begin{equation}
+    D\to P\to D
+\end{equation}
+升级为
+\begin{equation}
+    \text{homogeneous noise-suppression pressure}\to P\to D,
+    \qquad
+    \text{structure safety}\dashv P\to D.
+\end{equation}
+该修改直接回应 常规双反馈设计 的主要缺口：监督对象不仅可以更新，而且有可测、受限、区域分层的动力向更干净方向更新。
+\end{document}
+

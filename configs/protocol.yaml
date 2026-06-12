@@ -1,0 +1,20 @@
+stage_budgets:
+  G1: 
+    max_steps: 100
+  G2: 
+    max_steps: 100
+  G3: 
+    max_candidate_patches: 2048
+    max_accepted_patches: 512
+    max_donor_volumes: 2
+  G4: 
+    max_steps: 100
+  G5: 
+    max_steps: 100
+  G6: 
+    max_steps: 50
+  G7: 
+    max_cycles: 3
+    max_steps_per_cycle: 50
+  G8: 
+    max_steps: 200

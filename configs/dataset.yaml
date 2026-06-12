@@ -1,0 +1,66 @@
+dataset:
+  root: ./datasets
+  dataset_dir: 004-FBP
+  format: ome_zarr
+  volume_manifest: manifests/004_fbp_volumes.json
+  reg_rel_template: "{volume_id}_ome.zarr/REG"
+  hr_rel_template: "{volume_id}_ome.zarr/HR"
+  volume_id_source: manifest
+  
+  reg_level: "0"
+  hr_level: "0"
+  axes: ["z", "y", "x"]
+  patch_size: [64, 64]
+  context_offsets: [-1, 1]
+  
+  use_hr_for_training: false
+  use_hr_for_validation: true
+
+splits:
+  split_file_relative_to_dataset_root: true
+  split_file: splits/fbp_splits.json
+  split_key: volume_id
+  require_donor_receiver_volume_disjoint: true
+  require_train_val_volume_disjoint: true
+
+normalization:
+  input_unit: hu
+  clip:
+    enabled: true
+    min: -1024
+    max: 3000
+  scaling:
+    mode: zscore_after_clip
+    statistics_scope: per_volume
+    mean_source: REG
+    std_source: REG
+    apply_same_transform_to_hr: true
+  enforce_reg_hr_consistency: true
+  safety:
+    min_std: 1.0e-6
+    on_zero_std: abort_audit
+    on_reg_hr_inconsistent: abort_audit
+
+alignment:
+  require_physical_alignment: true
+  shape_mismatch_policy: allow_only_if_physical_coordinates_match
+  resampling_policy: audit_only_no_resample_by_default
+  crop_policy: disabled_by_default
+  spacing_abs_tol: 1e-4
+  spacing_rel_tol: 1e-3
+  origin_abs_tol: 1e-3
+  fallback_behavior: reg_only_self_supervised
+  disable_hr_validation_if_alignment_fails: true
+
+bounded_audit:
+  max_volumes: 2
+  max_slices_per_volume: 16
+  max_patches_per_slice: 8
+  max_total_patches: 256
+  require_first_middle_last_slices: true
+  verify_slice_continuity: true
+  verify_chunk_not_used_as_patch: true
+  hash_mode: metadata_and_sample
+  sample_hash_algorithm: sha256
+  metadata_hash_algorithm: sha256
+  full_content_hash_required: false

@@ -1,0 +1,45 @@
+thresholds:
+  residual_audit:
+    min_accepted_count: 128
+    min_accepted_rate: 0.05
+    max_structural_score_q95: 0.05
+    max_low_frequency_leakage_q95: 0.04
+    max_edge_leakage_q95: 0.03
+    relative_std_min: 0.85
+    relative_std_max: 1.15
+    require_donor_receiver_isolation: true
+    require_residual_pool_freshness: true
+    max_swd: 0.15
+    max_nps_shape_error: 0.15
+
+  context_audit:
+    max_high_frequency_correlation: 0.10
+    max_high_frequency_leakage_ratio: 0.05
+    min_context_helpfulness_delta: 0.01
+    max_context_gate_on_unreliable_region: 0.10
+
+  proposal_qualification:
+    min_homogeneous_noise_reduction: 0.20
+    min_edge_contrast_retention: 0.90
+    min_lesion_contrast_retention: 0.90
+    max_low_frequency_bias: 0.05
+    max_nps_shape_error: 0.15
+    reject_gaussian_blur_negative_control: true
+
+  dynamic_target_gating:
+    max_W_fb_in_lesion_mean: 0.05
+    max_W_fb_at_edge_mean: 0.05
+    min_W_fb_in_homogeneous_mean: 0.20
+    max_target_drift_q95: 0.15
+    max_pd_disagreement_allowed: 0.10
+    reject_all_ones_gate: true
+    all_ones_gate_threshold: 0.95
+    rho_ramp_step: 0.05
+    max_rho: 1.0
+    initial_alpha: 0.5
+
+  cycle_stability:
+    max_cycle_drift_q95: 0.05
+    max_target_drift_q95: 0.10
+    max_residual_policy_change: 0.20
+    max_loss_oscillation_ratio: 0.30
