@@ -75,6 +75,10 @@ class TraceCTStateMachine:
         # Track metric histories for G6-G8 trends
         self.target_drift_history: List[float] = []
         self.disagreement_history: List[float] = []
+        self.rollback_triggered = False
+        self.rollback_stage: Stage | None = None
+        self.rollback_reasons: List[str] = []
+        self.allow_unreleased_denoiser = False
         
         # Modules allowed in each stage
         self.allowed_modules: Dict[Stage, List[str]] = {
@@ -99,11 +103,16 @@ class TraceCTStateMachine:
             req_stage = stage_order[i]
             record = self.logger.get_stage_record(req_stage.value, status="pass")
             if not record:
-                return False
+                if not (
+                    self.allow_unreleased_denoiser
+                    and req_stage == Stage.G45
+                    and self.logger.get_stage_record(req_stage.value, status="fail")
+                ):
+                    return False
                 
             # Verify Freshness (TTL check)
-            filename = f"{req_stage.value}_pass.json"
-            filepath = self.logger.stage_records_dir / filename
+            status = "pass" if record else "fail"
+            filepath = self.logger.stage_records_dir / f"{req_stage.value}_{status}.json"
             if filepath.exists():
                 mtime = filepath.stat().st_mtime
                 if (time.time() - mtime) > self.ttl_seconds:
@@ -235,6 +244,8 @@ class TraceCTStateMachine:
     def require_denoising_strength_release(self, target_stage: Stage) -> Tuple[bool, List[str]]:
         if target_stage not in [Stage.G5, Stage.G6, Stage.G7]:
             return True, []
+        if self.allow_unreleased_denoiser:
+            return True, ["Exploratory long alternating mode: unreleased D is allowed past G4.5."]
         record = self.get_denoising_strength_record()
         if record is None:
             return False, ["G4.5 denoising strength audit pass record is required before G5/G6/G7."]
@@ -248,6 +259,9 @@ class TraceCTStateMachine:
         Performs an automatic rollback to the G4 checkpoint/state and writes the fallback report.
         """
         self.rho_t = 0.0  # Hard drop
+        self.rollback_triggered = True
+        self.rollback_stage = failed_stage
+        self.rollback_reasons = list(reasons)
         
         report = {
             "timestamp": str(time.time()),
@@ -268,6 +282,16 @@ class TraceCTStateMachine:
         report_path = report_dir / "fallback_report.json"
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2)
+
+    def get_active_rollback(self) -> Tuple[Stage | None, List[str]]:
+        if not self.rollback_triggered:
+            return None, []
+        return self.rollback_stage, list(self.rollback_reasons)
+
+    def clear_rollback(self) -> None:
+        self.rollback_triggered = False
+        self.rollback_stage = None
+        self.rollback_reasons = []
             
     def get_fallback_action(self, failed_stage: Stage) -> str:
         """Returns the fallback action for a failed stage."""

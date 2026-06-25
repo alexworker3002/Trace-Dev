@@ -10,13 +10,35 @@ training:
   g4_steps: 3200
   g5_steps: 3000
   g6_steps: 1000
-  g7_steps: 600
-  g8_steps: 600
+  g7_steps: 6000
+  g8_steps: 6000
   audit_every_cycle: true
+  strict_rollback: true
+  final_strength_audit: true
+optimizer:
+  g6_denoiser_lr: 0.001
+  g7_denoiser_lr: 0.001
+  g7_proposal_lr: 0.0005
+  g8_denoiser_lr: 0.0007
+  g8_proposal_lr: 0.0003
+input_noise:
+  enabled: true
+  type: poisson
+  stages:
+    - G1
+    - G2
+    - G4
+  peak: 80.0
+  strength: 0.35
 data:
   split: train
   volume_id: null
-  batch_size: 128
+  input_mode: full_slice
+  residual_input_mode: patch
+  residual_patches_per_slice: 32
+  slices_per_volume: 16
+  patches_per_volume: 256
+  batch_size: 8
   num_workers: 4
 distributed:
   backend: nccl

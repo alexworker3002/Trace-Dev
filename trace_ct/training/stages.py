@@ -86,6 +86,31 @@ def compute_nps_loss(s_hat: torch.Tensor, x_h: torch.Tensor) -> torch.Tensor:
     return loss
 
 
+def add_poisson_input_noise(x: torch.Tensor, peak: float = 80.0, strength: float = 1.0) -> torch.Tensor:
+    if strength <= 0.0 or peak <= 0.0:
+        return x
+    x_min = x.amin(dim=(-2, -1), keepdim=True)
+    x_max = x.amax(dim=(-2, -1), keepdim=True)
+    span = (x_max - x_min).clamp_min(1e-6)
+    x01 = ((x - x_min) / span).clamp(0.0, 1.0)
+    sampled = torch.poisson(x01 * peak) / peak
+    poisson_x = x_min + sampled * span
+    return x + float(strength) * (poisson_x - x)
+
+
+def apply_configured_input_noise(stage_obj, x: torch.Tensor) -> torch.Tensor:
+    cfg = getattr(stage_obj, "input_noise", None) or {}
+    if not bool(cfg.get("enabled", False)):
+        return x
+    if str(cfg.get("type", "poisson")).lower() != "poisson":
+        return x
+    return add_poisson_input_noise(
+        x,
+        peak=float(cfg.get("peak", 80.0)),
+        strength=float(cfg.get("strength", 1.0)),
+    )
+
+
 def get_denoise_gate(edge_mask: torch.Tensor, lesion_mask: torch.Tensor, device: torch.device, shape: tuple) -> torch.Tensor:
     if edge_mask is not None:
         e_mask = edge_mask.to(device)
@@ -173,6 +198,45 @@ def compute_d_auxiliary_losses(
     }
 
 
+def load_d_training_params(stage_key: str) -> tuple[float, float, float, Dict[str, float]]:
+    thresholds = {
+        "r_D_hom_min": 0.65,
+        "r_D_hom_max": 0.85,
+        "r_D_hom_identity": 0.90,
+    }
+    default_weights = {
+        "target": 1.0,
+        "pd": 1.0,
+        "proposal_cycle": 20.0,
+        "residual": 1.0,
+        "native_noise": 0.0,
+        "hom_target": 0.0,
+        "hom_den": 25.0,
+        "strength": 60.0,
+        "under": 30.0,
+        "edge": 10.0,
+        "lesion": 10.0,
+        "decorr": 10.0,
+        "nps": 5.0,
+    }
+    weights = default_weights.copy()
+    try:
+        import yaml
+        with open("configs/stage_g45_strength.yaml", "r") as f:
+            cfg = yaml.safe_load(f) or {}
+        thresholds.update(cfg.get("thresholds", {}) or {})
+        loss_cfg = cfg.get("loss_weights", {}) or {}
+        weights.update(loss_cfg.get("default", {}) or {})
+        weights.update(loss_cfg.get(stage_key, {}) or {})
+    except Exception:
+        pass
+
+    tau_min = float(thresholds.get("r_D_hom_min", 0.65))
+    tau_max = float(thresholds.get("r_D_hom_max", 0.85))
+    tau_under = float(thresholds.get("r_D_hom_identity", 0.90))
+    return tau_min, tau_max, tau_under, {key: float(value) for key, value in weights.items()}
+
+
 
 def build_safe_feedback_components(
     w_safety: torch.Tensor,
@@ -218,6 +282,7 @@ class G1MaskedBaseline:
     def step(self, batch: Dict[str, torch.Tensor]) -> float:
         """Performs one training step using block masking."""
         noisy = batch["noisy"].to(self.device)
+        input_noisy = apply_configured_input_noise(self, noisy)
         homo_mask = batch.get("homogeneous_mask")
         if homo_mask is not None:
             homo_mask = homo_mask.to(self.device)
@@ -225,10 +290,10 @@ class G1MaskedBaseline:
         self.optimizer.zero_grad()
         
         # Self-supervised masking operator
-        masked_noisy, mask = apply_block_mask(noisy, block_size=4, mask_ratio=0.2)
+        masked_noisy, mask = apply_block_mask(input_noisy, block_size=4, mask_ratio=0.2)
         
         # Denoiser forward pass: D_theta(y_h_M, x_h, p_h=0, c_h=0)
-        pred = self.denoiser(y_h_M=masked_noisy, x_h=noisy)
+        pred = self.denoiser(y_h_M=masked_noisy, x_h=input_noisy)
         
         # Masked-only loss
         diff = pred - noisy
@@ -268,6 +333,9 @@ class G2ContextGating:
             
         self.denoiser = Denoiser(in_channels=19, out_channels=1).to(device)
         self.context_encoder = ContextEncoder(in_channels=1, out_channels=16).to(device)
+        for param in self.context_encoder.parameters():
+            param.requires_grad_(False)
+        self.context_encoder.eval()
         self.optimizer = torch.optim.Adam(
             list(self.denoiser.parameters()) + list(self.context_encoder.parameters()), 
             lr=1e-3
@@ -276,18 +344,19 @@ class G2ContextGating:
     def step(self, batch: Dict[str, torch.Tensor]) -> float:
         """Performs one training step with context and block masking."""
         noisy = batch["noisy"].to(self.device)
+        input_noisy = apply_configured_input_noise(self, noisy)
         adjacent = batch["adjacent_noisy"].to(self.device)
         
         self.optimizer.zero_grad()
         
         # Self-supervised masking operator
-        masked_noisy, mask = apply_block_mask(noisy, block_size=4, mask_ratio=0.2)
+        masked_noisy, mask = apply_block_mask(input_noisy, block_size=4, mask_ratio=0.2)
         
         # Extract low-frequency features from adjacent slices
         context_features = self.context_encoder(adjacent)
         
         # Denoiser forward pass: D_theta(y_h_M, x_h, p_h=0, c_h)
-        pred = self.denoiser(y_h_M=masked_noisy, x_h=noisy, c_h=context_features)
+        pred = self.denoiser(y_h_M=masked_noisy, x_h=input_noisy, c_h=context_features)
         
         # Masked-only loss
         diff = pred - noisy
@@ -333,8 +402,7 @@ class G4BaselineProposals:
         self.proposal_generator.eval()
         
         self.optimizer = torch.optim.Adam(
-            list(self.denoiser.parameters()) + list(self.context_encoder.parameters()), 
-            lr=3e-3
+            self.denoiser.parameters(), lr=3e-3
         )
         
         # Initialize the ResidualController using thresholds parameters
@@ -345,6 +413,7 @@ class G4BaselineProposals:
         self.residual_controller = ResidualController(initial_alpha=init_alpha, ramp_step=r_step, max_rho=m_rho)
         
         self.donor_volume_ids = donor_volume_ids if donor_volume_ids is not None else ["donor_1"]
+        self.residual_patches_per_slice = 1
         
         # Safe path resolution supporting both real and mock loggers
         if hasattr(self.state_machine.logger, "run_dir"):
@@ -379,6 +448,10 @@ class G4BaselineProposals:
         self.state_machine.rho_t = self.residual_controller.rho_t
         
         original_noisy = noisy.clone()
+        noisy = apply_configured_input_noise(self, noisy)
+        input_perturbation = noisy - original_noisy
+        injected_residual = torch.zeros_like(noisy)
+        injection_support = torch.zeros_like(noisy)
         
         # Inject residual
         rho = self.residual_controller.rho_t
@@ -386,8 +459,27 @@ class G4BaselineProposals:
         if rho > 0.0 and self.accepted_pool_path.exists():
             residuals = torch.load(self.accepted_pool_path).to(self.device)
             if residuals.shape[0] > 0:
-                idx = torch.randint(0, residuals.shape[0], (noisy.shape[0],))
-                res_patch = residuals[idx].to(self.device)
+                patch_count = max(1, int(getattr(self, "residual_patches_per_slice", 1)))
+                idx = torch.randint(0, residuals.shape[0], (noisy.shape[0], patch_count), device=self.device)
+                res_patch = residuals[idx.reshape(-1)].to(self.device)
+                if res_patch.shape[-2:] != noisy.shape[-2:]:
+                    _, _, h, w = noisy.shape
+                    ph, pw = res_patch.shape[-2:]
+                    residual_canvas = torch.zeros_like(noisy)
+                    support_canvas = torch.zeros_like(noisy)
+                    for b in range(noisy.shape[0]):
+                        for k in range(patch_count):
+                            patch = res_patch[b * patch_count + k]
+                            max_y = max(0, h - ph)
+                            max_x = max(0, w - pw)
+                            y0 = int(torch.randint(0, max_y + 1, (1,), device=self.device).item()) if max_y > 0 else 0
+                            x0 = int(torch.randint(0, max_x + 1, (1,), device=self.device).item()) if max_x > 0 else 0
+                            residual_canvas[b, :, y0:y0 + ph, x0:x0 + pw] += patch
+                            support_canvas[b, :, y0:y0 + ph, x0:x0 + pw] = 1.0
+                    res_patch = residual_canvas
+                    injection_support = support_canvas
+                else:
+                    injection_support = torch.ones_like(noisy)
                 
                 # Get A_h map from ProposalGenerator
                 with torch.no_grad():
@@ -397,7 +489,8 @@ class G4BaselineProposals:
                     )
                     
                 # Injection: y_h = x_h + rho_t * alpha_t * A_h * z_d
-                noisy = noisy + rho * alpha * A_h * res_patch
+                injected_residual = rho * alpha * A_h * res_patch
+                noisy = noisy + injected_residual
                 
         masked_noisy, mask = apply_block_mask(noisy, block_size=4, mask_ratio=0.2)
         context_features = self.context_encoder(adjacent)
@@ -410,40 +503,67 @@ class G4BaselineProposals:
         
         # Loss
         diff = pred - original_noisy
-        recon_loss = (mask * (diff ** 2)).sum() / (mask.sum() + 1e-8)
+        focus_mask = injection_support if injection_support.sum() > 0 else torch.ones_like(noisy)
+        recon_mask = mask * focus_mask
+        recon_loss = (recon_mask * (diff ** 2)).sum() / (recon_mask.sum() + 1e-8)
+        removed_residual = noisy - pred
+        homogeneous_mask = batch.get("homogeneous_mask")
+        if homogeneous_mask is not None:
+            safe_mask = homogeneous_mask.to(self.device)
+        else:
+            safe_mask = torch.ones_like(noisy)
+        if edge_mask is not None:
+            safe_mask = safe_mask * (1.0 - edge_mask.to(self.device))
+        if lesion_mask is not None:
+            safe_mask = safe_mask * (1.0 - lesion_mask.to(self.device))
+        safe_mask = torch.clamp(safe_mask, 0.0, 1.0)
+        residual_mask = safe_mask * injection_support
+        residual_loss = (residual_mask * (removed_residual - injected_residual) ** 2).sum() / (residual_mask.sum() + 1e-8)
+        native_noise_proxy = original_noisy - F.avg_pool2d(original_noisy, kernel_size=7, stride=1, padding=3)
+        native_noise_target = input_perturbation + injected_residual + 0.35 * safe_mask * native_noise_proxy
+        native_noise_loss = (safe_mask * (removed_residual - native_noise_target) ** 2).sum() / (safe_mask.sum() + 1e-8)
+        clean_input = apply_configured_input_noise(self, original_noisy)
+        clean_masked_noisy, _ = apply_block_mask(clean_input, block_size=4, mask_ratio=0.2)
+        pred_clean = self.denoiser(y_h_M=clean_masked_noisy, x_h=clean_input, c_h=context_features, denoise_gate=denoise_gate)
+        clean_removed_residual = clean_input - pred_clean
+        native_clean_target = (clean_input - original_noisy) + 0.35 * safe_mask * native_noise_proxy
+        native_clean_loss = (safe_mask * (clean_removed_residual - native_clean_target) ** 2).sum() / (safe_mask.sum() + 1e-8)
+        hom_lowpass = F.avg_pool2d(original_noisy, kernel_size=7, stride=1, padding=3)
+        hom_target = original_noisy - 0.45 * safe_mask * (original_noisy - hom_lowpass)
+        hom_target_loss = (safe_mask * (pred - hom_target) ** 2).sum() / (safe_mask.sum() + 1e-8)
         
-        # Load G4.5 thresholds
-        tau_min, tau_max, tau_under = 0.65, 0.85, 0.90
-        try:
-            import yaml
-            with open("configs/stage_g45_strength.yaml", "r") as f:
-                cfg = yaml.safe_load(f)
-            t_cfg = cfg.get("thresholds", {})
-            tau_min = float(t_cfg.get("r_D_hom_min", 0.65))
-            tau_max = float(t_cfg.get("r_D_hom_max", 0.85))
-            tau_under = float(t_cfg.get("r_D_hom_identity", 0.90))
-        except Exception:
-            pass
+        tau_min, tau_max, tau_under, weights = load_d_training_params("g4")
 
         # Compute auxiliary losses
+        aux_batch = dict(batch)
+        if injection_support.sum() > 0:
+            if homogeneous_mask is not None:
+                aux_batch["homogeneous_mask"] = homogeneous_mask.to(self.device) * injection_support
+            if edge_mask is not None:
+                aux_batch["edge_mask"] = edge_mask.to(self.device) * injection_support
+            if lesion_mask is not None:
+                aux_batch["lesion_mask"] = lesion_mask.to(self.device) * injection_support
         aux = compute_d_auxiliary_losses(
             s_hat=pred,
             x_h=original_noisy,
-            batch=batch,
+            batch=aux_batch,
             tau_min=tau_min,
             tau_max=tau_max,
             tau_under=tau_under,
         )
         
         loss = (
-            recon_loss
-            + 25.0 * aux["l_hom_den"]
-            + 60.0 * aux["l_strength"]
-            + 30.0 * aux["l_under"]
-            + 10.0 * aux["l_edge"]
-            + 10.0 * aux["l_lesion"]
-            + 10.0 * aux["l_decorr"]
-            + 5.0 * aux["l_nps"]
+            weights["target"] * recon_loss
+            + weights["residual"] * residual_loss
+            + weights["native_noise"] * (native_noise_loss + native_clean_loss)
+            + weights["hom_target"] * hom_target_loss
+            + weights["hom_den"] * aux["l_hom_den"]
+            + weights["strength"] * aux["l_strength"]
+            + weights["under"] * aux["l_under"]
+            + weights["edge"] * aux["l_edge"]
+            + weights["lesion"] * aux["l_lesion"]
+            + weights["decorr"] * aux["l_decorr"]
+            + weights["nps"] * aux["l_nps"]
         )
         
         loss.backward()
@@ -451,6 +571,13 @@ class G4BaselineProposals:
         
         # Auto-update ramping for subsequent iterations
         self.residual_controller.step_ramp(passed_audit=True)
+        self.last_metrics = {
+            "rho_t": float(rho),
+            "alpha_t": float(alpha),
+            "injection_support_fraction": float(injection_support.mean().detach().item()),
+            "injected_residual_std": float(injected_residual.detach().std().item()),
+            "input_perturbation_std": float(input_perturbation.detach().std().item()),
+        }
         
         return loss.item()
 
@@ -472,10 +599,10 @@ class G5ProposalQualification:
             
         self.proposal_generator = ProposalGenerator(in_channels=19).to(device)
         self.context_encoder = ContextEncoder(in_channels=1, out_channels=16).to(device)
-        self.optimizer = torch.optim.Adam(
-            list(self.proposal_generator.parameters()) + list(self.context_encoder.parameters()), 
-            lr=1e-3
-        )
+        for param in self.context_encoder.parameters():
+            param.requires_grad_(False)
+        self.context_encoder.eval()
+        self.optimizer = torch.optim.Adam(self.proposal_generator.parameters(), lr=1e-3)
         
     def step(self, batch: Dict[str, torch.Tensor]) -> float:
         noisy = batch["noisy"].to(self.device)
@@ -505,7 +632,8 @@ class G5ProposalQualification:
         self.optimizer.zero_grad()
         
         # Generate inputs
-        context_features = self.context_encoder(adjacent)
+        with torch.no_grad():
+            context_features = self.context_encoder(adjacent)
         
         # Blind spot input
         masked_noisy, mask_bs = apply_block_mask(noisy, block_size=4, mask_ratio=0.2)
@@ -605,8 +733,9 @@ class G6DynamicTargetGating:
         
         self.optimizer.zero_grad()
         
-        # Extract features
-        context_features = self.context_encoder(adjacent)
+        # Context is a frozen construction variable during D refinement.
+        with torch.no_grad():
+            context_features = self.context_encoder(adjacent)
         
         # Generate proposal and masks under no gradient
         with torch.no_grad():
@@ -651,18 +780,7 @@ class G6DynamicTargetGating:
         diff = pred - t_h
         recon_loss = (mask * (diff ** 2)).sum() / (mask.sum() + 1e-8)
         
-        # Load G4.5 thresholds
-        tau_min, tau_max, tau_under = 0.65, 0.85, 0.90
-        try:
-            import yaml
-            with open("configs/stage_g45_strength.yaml", "r") as f:
-                cfg = yaml.safe_load(f)
-            t_cfg = cfg.get("thresholds", {})
-            tau_min = float(t_cfg.get("r_D_hom_min", 0.65))
-            tau_max = float(t_cfg.get("r_D_hom_max", 0.85))
-            tau_under = float(t_cfg.get("r_D_hom_identity", 0.90))
-        except Exception:
-            pass
+        tau_min, tau_max, tau_under, weights = load_d_training_params("g6")
 
         # Compute auxiliary losses
         aux = compute_d_auxiliary_losses(
@@ -675,14 +793,14 @@ class G6DynamicTargetGating:
         )
         
         loss = (
-            recon_loss
-            + 25.0 * aux["l_hom_den"]
-            + 60.0 * aux["l_strength"]
-            + 30.0 * aux["l_under"]
-            + 10.0 * aux["l_edge"]
-            + 10.0 * aux["l_lesion"]
-            + 10.0 * aux["l_decorr"]
-            + 5.0 * aux["l_nps"]
+            weights["target"] * recon_loss
+            + weights["hom_den"] * aux["l_hom_den"]
+            + weights["strength"] * aux["l_strength"]
+            + weights["under"] * aux["l_under"]
+            + weights["edge"] * aux["l_edge"]
+            + weights["lesion"] * aux["l_lesion"]
+            + weights["decorr"] * aux["l_decorr"]
+            + weights["nps"] * aux["l_nps"]
         )
         
         loss.backward()
@@ -708,13 +826,15 @@ class G7EndToEndSelfSupervised:
         self.denoiser = Denoiser(in_channels=19, out_channels=1).to(device)
         self.proposal_generator = ProposalGenerator(in_channels=19).to(device)
         self.context_encoder = ContextEncoder(in_channels=1, out_channels=16).to(device)
+        for param in self.context_encoder.parameters():
+            param.requires_grad_(False)
+        self.context_encoder.eval()
         
-        self.opt_d = torch.optim.Adam(
-            list(self.denoiser.parameters()) + list(self.context_encoder.parameters()), lr=3e-3
-        )
+        self.opt_d = torch.optim.Adam(self.denoiser.parameters(), lr=3e-3)
         self.opt_p = torch.optim.Adam(self.proposal_generator.parameters(), lr=2e-3)
         self.target_aggregator = DynamicTargetAggregator()
         self.cycle_step = 0
+        self.training_stage_key = "g7"
         
     def step(self, batch: Dict[str, torch.Tensor]) -> float:
         self.cycle_step += 1
@@ -732,6 +852,8 @@ class G7EndToEndSelfSupervised:
         if self.cycle_step % 2 == 0:
             # Update P_phi (D is frozen)
             self.opt_p.zero_grad()
+            stage_key = getattr(self, "training_stage_key", "g7")
+            _, _, _, p_weights = load_d_training_params(stage_key)
             p_h, w_adj, w_safety, w_hom, k_str, sigma_h, A_h, g_ctx = self.proposal_generator(
                 noisy, adjacent, adjacent, context_features
             )
@@ -746,7 +868,7 @@ class G7EndToEndSelfSupervised:
                 d_anchor = self.denoiser(y_h_M=noisy, x_h=noisy, p_h=p_h, c_h=context_features, denoise_gate=d_gate)
             loss_cycle = F.l1_loss(p_h, d_anchor)
             
-            loss = loss_bs + loss_adj + loss_lo + 20.0 * loss_cycle
+            loss = loss_bs + loss_adj + loss_lo + p_weights["proposal_cycle"] * loss_cycle
             loss.backward()
             self.opt_p.step()
             self._write_strength_cycle_audit(noisy, p_h, context_features, homo_mask, edge_mask, lesion_mask)
@@ -778,18 +900,8 @@ class G7EndToEndSelfSupervised:
             loss_target = (mask * (diff ** 2)).sum() / (mask.sum() + 1e-8)
             loss_pd = (w_fb * torch.abs(pred - p_h)).sum() / (w_fb.sum() + 1e-8)
             
-            # Load G4.5 thresholds
-            tau_min, tau_max, tau_under = 0.65, 0.85, 0.90
-            try:
-                import yaml
-                with open("configs/stage_g45_strength.yaml", "r") as f:
-                    cfg = yaml.safe_load(f)
-                t_cfg = cfg.get("thresholds", {})
-                tau_min = float(t_cfg.get("r_D_hom_min", 0.65))
-                tau_max = float(t_cfg.get("r_D_hom_max", 0.85))
-                tau_under = float(t_cfg.get("r_D_hom_identity", 0.90))
-            except Exception:
-                pass
+            stage_key = getattr(self, "training_stage_key", "g7")
+            tau_min, tau_max, tau_under, weights = load_d_training_params(stage_key)
 
             # Compute auxiliary losses
             aux = compute_d_auxiliary_losses(
@@ -802,15 +914,15 @@ class G7EndToEndSelfSupervised:
             )
             
             loss = (
-                loss_target
-                + loss_pd
-                + 25.0 * aux["l_hom_den"]
-                + 60.0 * aux["l_strength"]
-                + 30.0 * aux["l_under"]
-                + 10.0 * aux["l_edge"]
-                + 10.0 * aux["l_lesion"]
-                + 10.0 * aux["l_decorr"]
-                + 5.0 * aux["l_nps"]
+                weights["target"] * loss_target
+                + weights["pd"] * loss_pd
+                + weights["hom_den"] * aux["l_hom_den"]
+                + weights["strength"] * aux["l_strength"]
+                + weights["under"] * aux["l_under"]
+                + weights["edge"] * aux["l_edge"]
+                + weights["lesion"] * aux["l_lesion"]
+                + weights["decorr"] * aux["l_decorr"]
+                + weights["nps"] * aux["l_nps"]
             )
             
             loss.backward()
@@ -889,6 +1001,7 @@ class G8CycleStability:
             raise RuntimeError("G8 blocked")
             
         self.g7_stage = G7EndToEndSelfSupervised(state_machine, device)
+        self.g7_stage.training_stage_key = "g8"
         
     def step(self, batch: Dict[str, torch.Tensor]) -> float:
         # Run standard alternating update

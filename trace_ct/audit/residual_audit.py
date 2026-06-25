@@ -46,7 +46,7 @@ def compute_swd_2d(patch_res: torch.Tensor, patch_ref: torch.Tensor, num_project
 
 class ResidualAuditor:
     """
-    Audits candidate residual patches to ensure they do not carry structured anatomical
+    Audits candidate residual samples to ensure they do not carry structured anatomical
     or low-frequency content (which indicates leakage of clean structure or incomplete denoising).
     """
     def __init__(self, thresholds: ResidualAuditThresholds):
@@ -133,8 +133,8 @@ class ResidualAuditor:
 
 class ResidualPool:
     """
-    Manages the collection, storage, and isolation of audited residual patches.
-    Saves accepted residual patches along with detailed metadata (donor, slice, coordinates, metrics).
+    Manages the collection, storage, and isolation of audited residual samples.
+    Saves accepted residual samples along with detailed metadata (donor, slice, coordinates, metrics).
     """
     def __init__(self, run_dir: Path, thresholds: ResidualAuditThresholds, donor_volume_ids: List[str], audit_version_hash: str = "v1"):
         self.run_dir = run_dir
@@ -159,20 +159,23 @@ class ResidualPool:
         edge_masks: torch.Tensor = None, 
         clean_baselines: torch.Tensor = None,
         patch_size: Tuple[int, int] = (64, 64),
+        sample_mode: str = "patch",
         validation_hr_proxies: torch.Tensor = None
     ) -> Dict[str, Any]:
         """
-        Extracts patches from a volume, audits them, and registers them in the accepted or error pools.
+        Extracts/audits residual samples and registers them in the accepted or error pools.
         """
         if validation_hr_proxies is None:
             validation_hr_proxies = clean_baselines
+        if sample_mode not in {"patch", "full_slice"}:
+            raise ValueError(f"Unsupported residual sample_mode={sample_mode!r}.")
             
         if self.thresholds.require_donor_receiver_isolation:
             if volume_id not in self.donor_volume_ids:
                 raise ValueError(f"Volume {volume_id} is not in the donor volume list. HR isolation violation.")
                 
         slices, H, W = residuals.shape
-        ph, pw = patch_size
+        ph, pw = (H, W) if sample_mode == "full_slice" else patch_size
         
         accepted_count = 0
         rejected_count = 0
@@ -184,7 +187,7 @@ class ResidualPool:
                     edge_patch = edge_masks[s, y:y+ph, x:x+pw].unsqueeze(0) if edge_masks is not None else None
                     
                     val_proxy_patch = None
-                    if validation_hr_proxies is not None:
+                    if sample_mode != "full_slice" and validation_hr_proxies is not None:
                         val_s = s % validation_hr_proxies.shape[0]
                         val_proxy_patch = validation_hr_proxies[val_s, y:y+ph, x:x+pw].unsqueeze(0)
                         
